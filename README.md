@@ -59,6 +59,12 @@ flowchart LR
    - 복합 화재 발생 네트워크 그래프, 지지도-향상도(Support-Lift) 산점도, PCY 메모리 절감 곡선 및 모든 그림을 100% 동일하게 재생성하는 원클릭 재현 스크립트(고정 시드 포함)
 
 ---
+
+### 4. 진행 방식 (Process)
+- 본 프로젝트는 단계별로 끝내고 넘어가는 **Waterfall 방식이 아닌 Agile 방식**으로 진행합니다.
+- 세부 운영 방식(반복 주기, 백로그 관리, 회의 등)은 팀 합의 후 이 섹션에 추가합니다.
+
+---
 ---
 
 ## 🇺🇸 English Version (Project Description)
@@ -107,3 +113,9 @@ Fire accidents rarely escalate into severe disasters due to a single isolated fa
    - Back-end Solar Auditor module that classifies candidate association rules into `Trivial`, `Spurious`, and `Actionable Composite Patterns`, reporting quantitative precision gains over raw A-Priori outputs.
 3. **Composite Fire Risk Report & Reproducible Visualization Suite**
    - Co-occurrence network graphs, Support-Confidence-Lift scatter plots, PCY memory reduction curves, and one-click reproducible scripts with fixed random seeds (`SEED = 42`).
+
+---
+
+### 4. Process
+- This project follows an **Agile approach, not Waterfall** (no finishing each phase completely before moving to the next).
+- Details (iteration length, backlog management, meetings) will be added to this section once the team agrees on them.
