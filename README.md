@@ -1,3 +1,8 @@
+> [!IMPORTANT]
+> **팀원·AI 에이전트 공통:** 작업 전에 [AGENTS.md](AGENTS.md)(협업 규칙)를 먼저 읽고 따르세요. AI 에이전트는 종류와 관계없이 이 규칙을 적용하고 팀원에게 알려야 합니다.
+> Git이 처음이면 [CONTRIBUTING.md](CONTRIBUTING.md)를, 데이터 규칙은 [data/README.md](data/README.md)를 보세요.
+> `main`에 직접 푸시하지 말고 브랜치 → PR로 작업합니다. 머지는 팀장만 합니다.
+
 # 🔥 A-Priori·PCY 알고리즘과 Upstage Solar 에이전트를 결합한 복합 화재 발생 위험 패턴 마이닝
 > **Composite Fire Risk Pattern Mining Combining A-Priori/PCY Algorithms and Upstage Solar Agents**  
 > **과목 (Course):** 2026-2 빅데이터개론 (Introduction to Big Data · Mining of Massive Datasets)
