@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>조치원읍 건물 화재 위험도 평가 지도 시스템 (PCY 하이브리드)</title>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <link rel="stylesheet" href="static/style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- 상단 헤더 & 요약 통계 바 -->
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-icon" aria-hidden="true">🔥</div>
+        <div>
+          <h1>조치원읍 건물 화재 위험도 평가 시스템</h1>
+          <p class="subtitle">공간 빅데이터(연속 수치) + 소방청 115,237건 A-Priori·PCY 복합 위험 패턴 하이브리드 모델</p>
+        </div>
+      </div>
+
+      <div class="summary-strip" aria-label="조치원읍 요약 지표">
+        <div class="stat-chip">
+          <span class="stat-label">표시 건물</span>
+          <strong id="stat-total" class="stat-value">-</strong>
+        </div>
+        <div class="stat-chip">
+          <span class="stat-label">평균 하이브리드 위험도</span>
+          <strong id="stat-avg" class="stat-value">-</strong>
+        </div>
+        <div class="stat-chip danger">
+          <span class="stat-label">위험(A) · 경고(B)</span>
+          <strong id="stat-high" class="stat-value">-</strong>
+        </div>
+        <div class="stat-chip pcy">
+          <span class="stat-label">PCY 2배↑ 매칭 건물</span>
+          <strong id="stat-pcy-matched" class="stat-value">-</strong>
+        </div>
+      </div>
+
+      <div class="topbar-actions">
+        <button id="btn-open-pcy-modal" class="btn btn-accent" type="button">
+          🧮 A-Priori·PCY 분석 리포트
+        </button>
+        <button id="btn-open-modal" class="btn btn-outline" type="button">
+          📂 공공데이터 · 업로드
+        </button>
+      </div>
+    </header>
+
+    <!-- 메인 워크스페이스 -->
+    <main class="workspace">
+      <!-- 좌측 컨트롤 사이드바 -->
+      <aside class="sidebar" id="sidebar">
+        <section class="panel-section">
+          <div class="section-header">
+            <h2>🎨 주제도 (지도 색상 기준)</h2>
+          </div>
+          <div class="mode-tabs" role="tablist" aria-label="주제도 선택">
+            <button class="mode-tab active span-2" data-mode="risk" type="button">종합 하이브리드 위험도 (공간+PCY)</button>
+            <button class="mode-tab" data-mode="pcy" type="button">PCY 복합패턴 배수</button>
+            <button class="mode-tab" data-mode="age" type="button">건물 노후도</button>
+            <button class="mode-tab" data-mode="structure" type="button">건물 구조</button>
+            <button class="mode-tab" data-mode="usage" type="button">건물 용도</button>
+          </div>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-header">
+            <h2>🧮 실시간 장바구니 환경 (PCY 매칭)</h2>
+            <span id="env-hum-badge" class="env-badge">습도:보통</span>
+          </div>
+
+          <div class="env-block">
+            <span class="env-label">시간대 아이템</span>
+            <div class="seg-group" id="time-seg">
+              <button class="seg-btn active" data-time="시간대:주간(06-18)" type="button">주간 06-18</button>
+              <button class="seg-btn" data-time="시간대:야간(18-24)" type="button">야간 18-24</button>
+              <button class="seg-btn" data-time="시간대:심야(00-06)" type="button">심야 00-06</button>
+            </div>
+          </div>
+
+          <div class="env-block">
+            <span class="env-label">계절 아이템</span>
+            <div class="seg-group four" id="season-seg">
+              <button class="seg-btn active" data-season="계절:봄" type="button">봄</button>
+              <button class="seg-btn" data-season="계절:여름" type="button">여름</button>
+              <button class="seg-btn" data-season="계절:가을" type="button">가을</button>
+              <button class="seg-btn" data-season="계절:겨울" type="button">겨울</button>
+            </div>
+          </div>
+
+          <div class="slider-group">
+            <div class="slider-label">
+              <span>실효습도 (장바구니 구간 자동 변환)</span>
+              <strong id="val-humidity">50%</strong>
+            </div>
+            <input id="slider-humidity" type="range" min="15" max="85" step="1" value="50" />
+          </div>
+
+          <div class="slider-group">
+            <div class="slider-label">
+              <span>풍속 (연소확대 가중치)</span>
+              <strong id="val-wind">2.5 m/s</strong>
+            </div>
+            <input id="slider-wind" type="range" min="0" max="20" step="0.5" value="2.5" />
+          </div>
+
+          <div class="preset-row">
+            <button class="preset-btn active" data-time="시간대:주간(06-18)" data-season="계절:봄" data-humidity="50" data-wind="2.5" type="button">평시 (봄·주간)</button>
+            <button class="preset-btn" data-time="시간대:심야(00-06)" data-season="계절:겨울" data-humidity="22" data-wind="4" type="button">심야 취약</button>
+            <button class="preset-btn" data-time="시간대:심야(00-06)" data-season="계절:겨울" data-humidity="20" data-wind="12" type="button">시장·공단 경보</button>
+          </div>
+          <p class="helper-note">시간대·계절·습도가 바뀌면 건물별 장바구니에 매칭되는 PCY 복합 위험 규칙과 배수(Lift)가 실시간 재계산됩니다.</p>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-header">
+            <h2>🔍 건물 검색 및 필터</h2>
+            <button id="btn-reset-filters" class="text-btn" type="button">초기화</button>
+          </div>
+
+          <div class="form-group">
+            <label for="search-input">건물명 / 도로명 주소</label>
+            <input id="search-input" type="search" placeholder="예: 세종전통시장, 체육과학관, 새내로..." />
+          </div>
+
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="filter-ri">법정리</label>
+              <select id="filter-ri">
+                <option value="ALL">전체 (조치원읍)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="filter-grade">위험 등급</label>
+              <select id="filter-grade">
+                <option value="ALL">전체 등급</option>
+                <option value="위험(A)">위험(A) 75점↑</option>
+                <option value="경고(B)">경고(B) 60~74</option>
+                <option value="주의(C)">주의(C) 45~59</option>
+                <option value="보통(D)">보통(D) 30~44</option>
+                <option value="안전(E)">안전(E) 30↓</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="filter-usage">건물 주용도</label>
+            <select id="filter-usage">
+              <option value="ALL">전체 용도</option>
+              <option value="전통시장/상점가">전통시장/상점가</option>
+              <option value="제1·2종 근린생활시설">제1·2종 근린생활시설</option>
+              <option value="단독주택">단독주택</option>
+              <option value="공동주택">공동주택</option>
+              <option value="창고/공장시설">창고/공장시설</option>
+              <option value="교육연구시설">교육연구시설</option>
+              <option value="업무/공공시설">업무/공공시설</option>
+            </select>
+          </div>
+
+          <label class="toggle-row">
+            <input id="toggle-high-only" type="checkbox" />
+            <span>고위험 건물(A·B등급)만 강조 표시</span>
+          </label>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-header">
+            <h2>🗺️ 레이어 및 배경지도</h2>
+          </div>
+
+          <div class="form-group">
+            <label for="basemap-select">배경 지도 스타일</label>
+            <select id="basemap-select">
+              <option value="dark">다크 관제 지도 (Carto Dark)</option>
+              <option value="light">밝은 일반 지도 (Carto Positron)</option>
+              <option value="osm">OpenStreetMap 기본</option>
+              <option value="satellite">위성 영상 (Esri World Imagery)</option>
+            </select>
+          </div>
+
+          <div class="checkbox-stack">
+            <label class="toggle-row">
+              <input id="layer-stations" type="checkbox" checked />
+              <span>🚒 소방서 · 119지역대 위치</span>
+            </label>
+            <label class="toggle-row">
+              <input id="layer-hydrants" type="checkbox" checked />
+              <span>💧 소화전 위치</span>
+            </label>
+            <label class="toggle-row">
+              <input id="layer-boundary" type="checkbox" checked />
+              <span>📍 조치원읍 행정경계선</span>
+            </label>
+          </div>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-header">
+            <h2 id="legend-title">📊 범례 · 종합 하이브리드 위험도</h2>
+          </div>
+          <div id="legend-body" class="legend-list"></div>
+        </section>
+      </aside>
+
+      <!-- 중앙 인터랙티브 지도 영역 -->
+      <section class="map-stage" aria-label="조치원읍 화재 위험도 지도">
+        <div id="map"></div>
+
+        <!-- 빠른 이동 퀵 바 -->
+        <div class="quick-jumps" aria-label="주요 구역 빠른 이동">
+          <span class="quick-label">빠른 이동:</span>
+          <button class="jump-chip" data-lat="36.6013" data-lon="127.2995" data-zoom="17" type="button">조치원역 · 전통시장</button>
+          <button class="jump-chip" data-lat="36.6045" data-lon="127.2890" data-zoom="17" type="button">세종북부소방서</button>
+          <button class="jump-chip" data-lat="36.6095" data-lon="127.2898" data-zoom="16" type="button">고려대 · 서창리</button>
+          <button class="jump-chip" data-lat="36.5945" data-lon="127.2935" data-zoom="16" type="button">신흥·죽림 아파트</button>
+          <button class="jump-chip" data-lat="36.5870" data-lon="127.2955" data-zoom="16" type="button">번암 공단</button>
+          <button class="jump-chip" data-lat="36.6015" data-lon="127.2945" data-zoom="14" type="button">전체 보기</button>
+        </div>
+
+        <!-- 하단 조작 안내 배지 -->
+        <div class="map-hint" id="map-hint">
+          💡 건물에 <strong>마우스를 올리면</strong> 공간 속성 + PCY 복합 위험 배수가 즉시 표시되고, <strong>클릭</strong>하면 소방 경로와 발동된 PCY 규칙 상세를 볼 수 있습니다.
+        </div>
+
+        <!-- 마우스 오버(Hover) 플로팅 평가 카드 -->
+        <div id="hover-card" class="hover-card hidden" role="status" aria-live="polite">
+          <div class="hc-top">
+            <div>
+              <span id="hc-ri" class="hc-ri">원리</span>
+              <h3 id="hc-name">건물명</h3>
+              <p id="hc-addr" class="hc-addr">주소</p>
+            </div>
+            <div class="hc-score-box" id="hc-score-box">
+              <span id="hc-score" class="hc-score">0</span>
+              <span id="hc-grade" class="hc-grade">등급</span>
+            </div>
+          </div>
+
+          <div id="hc-split" class="hc-split">물리·공간 0점 + PCY 패턴 +0점</div>
+
+          <div class="hc-grid">
+            <div class="hc-item"><span>주용도</span><strong id="hc-usage">-</strong></div>
+            <div class="hc-item"><span>벽 / 지붕 구조</span><strong id="hc-structure">-</strong></div>
+            <div class="hc-item"><span>준공/연식</span><strong id="hc-age">-</strong></div>
+            <div class="hc-item"><span>규모</span><strong id="hc-scale">-</strong></div>
+            <div class="hc-item"><span>스프링클러</span><strong id="hc-sprinkler">-</strong></div>
+            <div class="hc-item"><span>인접(30m)</span><strong id="hc-neighbors">-</strong></div>
+          </div>
+
+          <div class="hc-infra">
+            <span>🚒 <strong id="hc-station">-</strong></span>
+            <span>💧 <strong id="hc-hydrant">-</strong></span>
+          </div>
+
+          <div id="hc-pcy-box" class="hc-pcy-box">
+            <div class="hc-pcy-head">
+              <span id="hc-pcy-title">🧮 PCY 복합 위험 패턴</span>
+              <strong id="hc-pcy-lift">-</strong>
+            </div>
+            <p id="hc-pcy-rule" class="hc-pcy-rule">-</p>
+            <p id="hc-pcy-meta" class="hc-pcy-meta">-</p>
+          </div>
+
+          <div class="hc-factors" id="hc-factors"></div>
+        </div>
+      </section>
+
+      <!-- 우측 선택 건물 상세 드로어 -->
+      <aside class="detail-drawer hidden" id="detail-drawer" aria-label="선택 건물 상세 분석">
+        <div class="drawer-header">
+          <div>
+            <span id="dd-badge" class="grade-pill">등급</span>
+            <h2 id="dd-name">건물을 선택하세요</h2>
+            <p id="dd-address" class="dd-address">-</p>
+          </div>
+          <button id="btn-close-drawer" class="icon-close" type="button" aria-label="상세 패널 닫기">✕</button>
+        </div>
+
+        <div class="drawer-body">
+          <div class="dd-score-summary">
+            <div class="dd-score-main">
+              <span class="dd-score-label">하이브리드 화재 위험 지수</span>
+              <div class="dd-score-num"><strong id="dd-score">0</strong><span>/ 100점</span></div>
+            </div>
+            <div id="dd-weather-note" class="dd-weather-note">공간 + PCY + 기상</div>
+          </div>
+
+          <div class="dd-section">
+            <h3>하이브리드 모델 점수 구성 (Discard 복원 + PCY)</h3>
+            <div id="dd-hybrid-bars" class="score-bars"></div>
+          </div>
+
+          <div class="dd-section">
+            <h3>발동된 PCY 복합 위험 규칙 (소방청 115,237건 학습)</h3>
+            <div id="dd-pcy-rules" class="pcy-rule-list"></div>
+          </div>
+
+          <div class="dd-section">
+            <h3>물리·공간 5대 세부 지표 (원점수 100점 기준)</h3>
+            <div id="dd-bars" class="score-bars"></div>
+          </div>
+
+          <div class="dd-section">
+            <h3>건축물 속성 상세</h3>
+            <dl class="attr-table" id="dd-attrs"></dl>
+          </div>
+
+          <div class="dd-section">
+            <h3>소방 출동 및 용수 접근성</h3>
+            <div class="infra-cards">
+              <div class="infra-card station">
+                <span>최근접 소방거점</span>
+                <strong id="dd-station-name">-</strong>
+                <em id="dd-station-dist">-</em>
+              </div>
+              <div class="infra-card hydrant">
+                <span>최근접 소화전</span>
+                <strong>지상식 소화전</strong>
+                <em id="dd-hydrant-dist">-</em>
+              </div>
+            </div>
+            <p class="helper-note">지도에 관할 소방서(붉은 점선) 및 소화전(청록 점선) 연결선이 표시되었습니다.</p>
+          </div>
+
+          <div class="dd-section">
+            <h3>핵심 취약 요인 및 권장 대책</h3>
+            <ul id="dd-recommendations" class="rec-list"></ul>
+          </div>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <!-- A-Priori · PCY 분석 리포트 모달 -->
+  <div id="pcy-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="pcy-modal-title">
+    <div class="modal-card wide">
+      <div class="modal-header">
+        <h2 id="pcy-modal-title">🧮 A-Priori · PCY 복합 위험 패턴 마이닝 결합 리포트</h2>
+        <button id="btn-close-pcy-modal" class="icon-close" type="button" aria-label="리포트 닫기">✕</button>
+      </div>
+      <div class="modal-body" id="pcy-modal-body">
+        <p class="helper-note">PCY 분석 메타데이터를 불러오는 중...</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- 공공데이터 안내 및 파일 업로드 모달 -->
+  <div id="data-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2 id="modal-title">📂 한국 실제 건물 데이터 출처 및 사용자 데이터 연동</h2>
+        <button id="btn-close-modal" class="icon-close" type="button" aria-label="모달 닫기">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="source-notice">
+          <strong>현재 지도 데이터 상태:</strong>
+          <span id="modal-dataset-info">데이터를 불러오는 중...</span>
+        </div>
+
+        <h3>1. 실제 건물 폴리곤 &amp; 속성 공식 다운로드 경로</h3>
+        <div class="source-grid">
+          <div class="source-box">
+            <h4>① 건물 모양 (폴리곤 공간정보)</h4>
+            <ul>
+              <li><strong>브이월드(V-World) / 국가공간정보포털</strong>: <em>GIS건물통합정보</em> (Shapefile, 건물관리번호·연면적·층수 포함)</li>
+              <li><strong>도로명주소 개발자센터</strong>: <em>건물 도형 및 전자지도</em> (읍면동별 최신 건물 윤곽선)</li>
+            </ul>
+          </div>
+          <div class="source-box">
+            <h4>② 건물 상세 속성 (건축물대장 &amp; 소방)</h4>
+            <ul>
+              <li><strong>국토교통부 건축HUB / 공공데이터포털</strong>: <em>건축물대장 표제부 API</em> (실제 사용승인일, 주구조, 주용도, 지붕구조)</li>
+              <li><strong>소방청 / 국가화재정보시스템(NFDS)</strong>: <em>화재발생정보, 전국 소방용수시설(소화전) 현황</em></li>
+            </ul>
+          </div>
+        </div>
+
+        <h3>2. 내 GeoJSON / CSV 데이터 바로 불러오기</h3>
+        <p class="helper-note">
+          브이월드·QGIS에서 변환한 <strong>GeoJSON</strong> 파일(폴리곤 교체)이나, 공공데이터포털에서 받은 <strong>CSV</strong> 속성 파일(<code>id</code> 또는 <code>name</code> 기준으로 기존 건물에 속성 병합)을 선택해 지도에서 바로 확인할 수 있습니다.
+        </p>
+        <div class="upload-box">
+          <input id="file-upload-input" type="file" accept=".geojson,.json,.csv" />
+          <button id="btn-reset-dataset" class="btn btn-outline" type="button">기본 조치원읍 데이터로 복원</button>
+        </div>
+        <p id="upload-status" class="upload-status"></p>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="static/app.js"></script>
+</body>
+</html>
