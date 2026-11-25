@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>조치원읍 건물 화재 위험도 평가 지도 시스템 (PCY 하이브리드)</title>
+  <title>건물 화재 위험도 평가 지도 시스템 (브이월드 GIS + PCY k=2 하이브리드)</title>
   <link rel="preconnect" href="https://cdn.jsdelivr.net" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
   <link rel="stylesheet" href="static/style.css" />
@@ -15,8 +15,8 @@
       <div class="brand">
         <div class="brand-icon" aria-hidden="true">🔥</div>
         <div>
-          <h1>조치원읍 건물 화재 위험도 평가 시스템</h1>
-          <p class="subtitle">공간 빅데이터(연속 수치) + 소방청 115,237건 A-Priori·PCY 복합 위험 패턴 하이브리드 모델</p>
+          <h1>건물 화재 위험도 평가 지도 시스템</h1>
+          <p class="subtitle">브이월드 공식 GIS건물통합정보(전국) + 소방청 115,237건 PCY(k=2) 복합 위험 쌍 하이브리드</p>
         </div>
       </div>
 
@@ -41,7 +41,7 @@
 
       <div class="topbar-actions">
         <button id="btn-open-pcy-modal" class="btn btn-accent" type="button">
-          🧮 A-Priori·PCY 분석 리포트
+          🧮 PCY (k=2) 분석 리포트
         </button>
         <button id="btn-open-modal" class="btn btn-outline" type="button">
           📂 공공데이터 · 업로드
@@ -53,6 +53,32 @@
     <main class="workspace">
       <!-- 좌측 컨트롤 사이드바 -->
       <aside class="sidebar" id="sidebar">
+        <section class="panel-section vworld-panel">
+          <div class="section-header">
+            <h2>🇰🇷 브이월드 전국 실시간 탐색</h2>
+            <span id="vworld-badge" class="env-badge vworld-on">V-World 연동</span>
+          </div>
+
+          <div class="vworld-search-wrap">
+            <div class="vworld-search-row">
+              <input id="vworld-search-input" type="search" placeholder="전국 장소·주소 검색 (예: 강남역, 국제시장, 세종여고)" />
+              <button id="btn-vworld-search" class="btn btn-accent btn-sm" type="button">이동</button>
+            </div>
+            <div id="vworld-search-results" class="vworld-results hidden"></div>
+          </div>
+
+          <label class="toggle-row vworld-toggle">
+            <input id="toggle-vworld-live" type="checkbox" />
+            <span>이동 시 현재 화면 건물 자동 로딩 (줌 16↑)</span>
+          </label>
+
+          <div class="vworld-action-row">
+            <button id="btn-fetch-viewport" class="btn btn-outline btn-sm" type="button">📡 현재 화면 불러오기</button>
+            <button id="btn-restore-jochiwon" class="btn btn-outline btn-sm" type="button">🏠 조치원 기본</button>
+          </div>
+          <p id="vworld-live-status" class="vworld-status">기본: 조치원읍 브이월드 공식 데이터셋</p>
+        </section>
+
         <section class="panel-section">
           <div class="section-header">
             <h2>🎨 주제도 (지도 색상 기준)</h2>
@@ -168,27 +194,46 @@
 
         <section class="panel-section">
           <div class="section-header">
-            <h2>🗺️ 레이어 및 배경지도</h2>
+            <h2>🗺️ 지도 가독성 및 레이어</h2>
           </div>
 
           <div class="form-group">
             <label for="basemap-select">배경 지도 스타일</label>
             <select id="basemap-select">
+              <option value="vworld_base">브이월드 공식 한글지도 (국토부)</option>
+              <option value="vworld_hybrid">브이월드 위성 + 한글라벨</option>
+              <option value="voyager" selected>선명한 일반 지도 (Carto Voyager)</option>
+              <option value="light">밝은 깔끔 지도 (Carto Positron)</option>
+              <option value="osm">OpenStreetMap 기본 (한글 지명)</option>
               <option value="dark">다크 관제 지도 (Carto Dark)</option>
-              <option value="light">밝은 일반 지도 (Carto Positron)</option>
-              <option value="osm">OpenStreetMap 기본</option>
               <option value="satellite">위성 영상 (Esri World Imagery)</option>
             </select>
           </div>
 
+          <div class="slider-group">
+            <div class="slider-label">
+              <span>건물 색상 투명도</span>
+              <strong id="val-opacity">78%</strong>
+            </div>
+            <input id="slider-opacity" type="range" min="20" max="95" step="5" value="78" />
+          </div>
+
           <div class="checkbox-stack">
+            <label class="toggle-row">
+              <input id="toggle-smart-opacity" type="checkbox" checked />
+              <span>🎯 고위험 강조 (안전 건물 반투명)</span>
+            </label>
+            <label class="toggle-row">
+              <input id="layer-ri-labels" type="checkbox" checked />
+              <span>🏷️ 법정리(14개 리) 지명 라벨</span>
+            </label>
             <label class="toggle-row">
               <input id="layer-stations" type="checkbox" checked />
               <span>🚒 소방서 · 119지역대 위치</span>
             </label>
             <label class="toggle-row">
               <input id="layer-hydrants" type="checkbox" checked />
-              <span>💧 소화전 위치</span>
+              <span>💧 소화전 위치 (확대 시 표시)</span>
             </label>
             <label class="toggle-row">
               <input id="layer-boundary" type="checkbox" checked />
@@ -211,13 +256,16 @@
 
         <!-- 빠른 이동 퀵 바 -->
         <div class="quick-jumps" aria-label="주요 구역 빠른 이동">
-          <span class="quick-label">빠른 이동:</span>
+          <span class="quick-label">조치원:</span>
           <button class="jump-chip" data-lat="36.6013" data-lon="127.2995" data-zoom="17" type="button">조치원역 · 전통시장</button>
-          <button class="jump-chip" data-lat="36.6045" data-lon="127.2890" data-zoom="17" type="button">세종북부소방서</button>
-          <button class="jump-chip" data-lat="36.6095" data-lon="127.2898" data-zoom="16" type="button">고려대 · 서창리</button>
-          <button class="jump-chip" data-lat="36.5945" data-lon="127.2935" data-zoom="16" type="button">신흥·죽림 아파트</button>
+          <button class="jump-chip" data-lat="36.6072" data-lon="127.2874" data-zoom="17" type="button">세종여고(서창리)</button>
+          <button class="jump-chip" data-lat="36.6156" data-lon="127.2855" data-zoom="16" type="button">홍익대 · 신안리</button>
           <button class="jump-chip" data-lat="36.5870" data-lon="127.2955" data-zoom="16" type="button">번암 공단</button>
-          <button class="jump-chip" data-lat="36.6015" data-lon="127.2945" data-zoom="14" type="button">전체 보기</button>
+          <button class="jump-chip" data-lat="36.6015" data-lon="127.2945" data-zoom="14" data-restore="1" type="button">조치원 전체</button>
+          <span class="quick-label nationwide">전국 실시간:</span>
+          <button class="jump-chip nationwide" data-lat="37.4980" data-lon="127.0276" data-zoom="17" data-live="1" type="button">서울 강남역</button>
+          <button class="jump-chip nationwide" data-lat="37.5700" data-lon="126.9996" data-zoom="17" data-live="1" type="button">서울 광장시장</button>
+          <button class="jump-chip nationwide" data-lat="35.1014" data-lon="129.0283" data-zoom="17" data-live="1" type="button">부산 국제시장</button>
         </div>
 
         <!-- 하단 조작 안내 배지 -->
@@ -334,11 +382,11 @@
     </main>
   </div>
 
-  <!-- A-Priori · PCY 분석 리포트 모달 -->
+  <!-- PCY (k=2) 분석 리포트 모달 -->
   <div id="pcy-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="pcy-modal-title">
     <div class="modal-card wide">
       <div class="modal-header">
-        <h2 id="pcy-modal-title">🧮 A-Priori · PCY 복합 위험 패턴 마이닝 결합 리포트</h2>
+        <h2 id="pcy-modal-title">🧮 PCY 단독 (k=2) 복합 위험 쌍 마이닝 리포트</h2>
         <button id="btn-close-pcy-modal" class="icon-close" type="button" aria-label="리포트 닫기">✕</button>
       </div>
       <div class="modal-body" id="pcy-modal-body">

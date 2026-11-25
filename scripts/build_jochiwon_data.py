@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import random
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -19,6 +20,10 @@ from typing import Any
 
 # 프로젝트 경로 설정
 ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from scripts import vworld_service  # noqa: E402
 DATA_DIR = ROOT_DIR / "data"
 BUILDINGS_OUT = DATA_DIR / "jochiwon_buildings.geojson"
 INFRA_OUT = DATA_DIR / "jochiwon_infra.geojson"
@@ -839,9 +844,156 @@ def generate_fallback_buildings() -> tuple[list[dict[str, Any]], list[dict[str, 
     return buildings, FALLBACK_FIRE_STATIONS, hydrants, None
 
 
+def _write_outputs(
+    buildings_geojson: dict[str, Any],
+    fire_stations: list[dict[str, Any]],
+    hydrants: list[dict[str, Any]],
+    boundary_poly: list[list[float]] | None,
+) -> None:
+    infra_features: list[dict[str, Any]] = []
+    for st in fire_stations:
+        infra_features.append(
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [st["lon"], st["lat"]]},
+                "properties": {
+                    "kind": "fire_station",
+                    "name": st["name"],
+                    "station_type": st["type"],
+                    "address": st["address"],
+                    "source": st["source"],
+                },
+            }
+        )
+    for hyd in hydrants:
+        infra_features.append(
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [hyd["lon"], hyd["lat"]]},
+                "properties": {
+                    "kind": "fire_hydrant",
+                    "name": hyd["name"],
+                    "source": hyd["source"],
+                },
+            }
+        )
+    if boundary_poly is not None:
+        infra_features.append(
+            {
+                "type": "Feature",
+                "geometry": {"type": "Polygon", "coordinates": [boundary_poly]},
+                "properties": {
+                    "kind": "boundary",
+                    "name": "세종특별자치시 조치원읍 행정경계",
+                },
+            }
+        )
+
+    infra_geojson = {
+        "type": "FeatureCollection",
+        "features": infra_features,
+    }
+
+    BUILDINGS_OUT.write_text(
+        json.dumps(buildings_geojson, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    INFRA_OUT.write_text(
+        json.dumps(infra_geojson, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+
+
+def build_vworld_jochiwon_dataset(
+    vworld_key: str,
+    vworld_domain: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[list[float]] | None, dict[str, int]]:
+    """브이월드 공식 도로명건물(LT_C_SPBD) + GIS건물통합정보(LT_C_BLDGINFO)로 조치원읍 전체를 구축한다."""
+    # OSM에서 행정경계 및 실측 소방서·소화전 보조 수집 (실패 시 폴백 사용)
+    boundary_poly: list[list[float]] | None = None
+    fire_stations = list(FALLBACK_FIRE_STATIONS)
+    hydrants = [
+        {"name": f"소화전 ({label})", "lat": lat, "lon": lon, "source": "주요 도로망 기준 배치"}
+        for lat, lon, label in SUPPLEMENTAL_HYDRANTS
+    ]
+    try:
+        _, osm_stations, osm_hydrants, osm_boundary = extract_osm_data()
+        if osm_stations:
+            fire_stations = osm_stations
+        if osm_hydrants:
+            hydrants = osm_hydrants
+        boundary_poly = osm_boundary
+    except Exception as exc:
+        print(f"[참고] OSM 보조 인프라 조회 생략, 기본 소방 인프라 적용: {exc}")
+
+    # 조치원읍 전역(서측 신대리·봉산리 ~ 북측 신안리·홍익대 ~ 남측 번암리 포함) 격자 수집
+    min_lon, min_lat, max_lon, max_lat = 127.258, 36.578, 127.316, 36.630
+    spbd_all = vworld_service.fetch_layer_tiled(
+        "LT_C_SPBD", min_lon, min_lat, max_lon, max_lat, vworld_key, vworld_domain, nx=3, ny=3, max_pages_per_tile=8
+    )
+    bldg_all = vworld_service.fetch_layer_tiled(
+        "LT_C_BLDGINFO", min_lon, min_lat, max_lon, max_lat, vworld_key, vworld_domain, nx=3, ny=3, max_pages_per_tile=10
+    )
+
+    # 조치원읍 소속 건물만 정확히 필터링 (SPBD는 gu=='조치원읍', 미매칭 BLDGINFO는 행정경계 다각형 기준)
+    spbd_jochiwon = [
+        f for f in spbd_all
+        if (f.get("properties") or {}).get("gu", "").strip() == "조치원읍"
+        or (
+            not (f.get("properties") or {}).get("gu", "").strip()
+            and boundary_poly is not None
+            and _feature_in_poly(f, boundary_poly)
+        )
+    ]
+
+    building_features, stats = vworld_service.fuse_and_score_vworld_features(
+        spbd_raw=spbd_jochiwon,
+        bldg_raw=bldg_all,
+        fire_stations=fire_stations,
+        hydrants=hydrants,
+        clip_polygon=boundary_poly,
+        force_jochiwon_ri=True,
+    )
+    return building_features, fire_stations, hydrants, boundary_poly, stats
+
+
+def _feature_in_poly(feat: dict[str, Any], poly: list[list[float]]) -> bool:
+    _, clat, clon, area = vworld_service.round_geometry_and_metrics(feat.get("geometry") or {})
+    return area > 0 and point_in_polygon(clon, clat, poly)
+
+
 def build_datasets() -> None:
     """수집된 건물·인프라 데이터를 통합 가공해 GeoJSON 파일로 저장한다."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    vworld_key, vworld_domain = vworld_service.load_vworld_config()
+    if vworld_key:
+        try:
+            print("📡 브이월드(V-World) 공식 GIS건물통합정보 + 도로명건물 수집 중 (조치원읍 전역)...")
+            building_features, fire_stations, hydrants, boundary_poly, stats = build_vworld_jochiwon_dataset(
+                vworld_key, vworld_domain
+            )
+            if len(building_features) >= 500:
+                buildings_geojson = {
+                    "type": "FeatureCollection",
+                    "metadata": {
+                        "region": "세종특별자치시 조치원읍",
+                        "source_mode": "브이월드 공식 GIS건물통합정보 + 도로명건물",
+                        "building_count": len(building_features),
+                        "ledger_matched": stats["ledger_matched"],
+                        "generated_year": CURRENT_YEAR,
+                        "note": "국토교통부 브이월드 도로명건물(LT_C_SPBD) 및 GIS건물통합정보(LT_C_BLDGINFO) 실측 폴리곤·사용승인일·주구조·주용도·층수를 결합한 공식 공간 데이터셋입니다.",
+                    },
+                    "features": building_features,
+                }
+                _write_outputs(buildings_geojson, fire_stations, hydrants, boundary_poly)
+                print(
+                    f"✅ 브이월드 조치원읍 구축 완료: 총 {len(building_features):,}동 "
+                    f"(건축물대장 실측 매칭 {stats['ledger_matched']:,}동)"
+                )
+                return
+        except Exception as exc:
+            print(f"[경고] 브이월드 수집 실패로 OSM 수집기로 전환합니다: {exc}")
 
     data_mode = "OSM 실시간 수집"
     try:
@@ -973,62 +1125,9 @@ def build_datasets() -> None:
         "features": building_features,
     }
 
-    infra_features: list[dict[str, Any]] = []
-    for st in fire_stations:
-        infra_features.append(
-            {
-                "type": "Feature",
-                "geometry": {"type": "Point", "coordinates": [st["lon"], st["lat"]]},
-                "properties": {
-                    "kind": "fire_station",
-                    "name": st["name"],
-                    "station_type": st["type"],
-                    "address": st["address"],
-                    "source": st["source"],
-                },
-            }
-        )
-    for hyd in hydrants:
-        infra_features.append(
-            {
-                "type": "Feature",
-                "geometry": {"type": "Point", "coordinates": [hyd["lon"], hyd["lat"]]},
-                "properties": {
-                    "kind": "fire_hydrant",
-                    "name": hyd["name"],
-                    "source": hyd["source"],
-                },
-            }
-        )
-    if boundary_poly is not None:
-        infra_features.append(
-            {
-                "type": "Feature",
-                "geometry": {"type": "Polygon", "coordinates": [boundary_poly]},
-                "properties": {
-                    "kind": "boundary",
-                    "name": "세종특별자치시 조치원읍 행정경계",
-                },
-            }
-        )
-
-    infra_geojson = {
-        "type": "FeatureCollection",
-        "features": infra_features,
-    }
-
-    BUILDINGS_OUT.write_text(
-        json.dumps(buildings_geojson, ensure_ascii=False, separators=(",", ":")),
-        encoding="utf-8",
-    )
-    INFRA_OUT.write_text(
-        json.dumps(infra_geojson, ensure_ascii=False, separators=(",", ":")),
-        encoding="utf-8",
-    )
-
+    _write_outputs(buildings_geojson, fire_stations, hydrants, boundary_poly)
     print(
-        f"생성 완료 ({data_mode}): 건물 {len(building_features)}동 -> {BUILDINGS_OUT}, "
-        f"소방인프라 {len(infra_features)}건 -> {INFRA_OUT}"
+        f"생성 완료 ({data_mode}): 건물 {len(building_features)}동 -> {BUILDINGS_OUT}"
     )
 
 

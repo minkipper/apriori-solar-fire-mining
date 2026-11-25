@@ -1,0 +1,383 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#map {
+  width: 100%;
+  height: 100%;
+  font-family: "Pretendard", "Noto Sans KR", "Malgun Gothic", sans-serif;
+  overflow: hidden;
+  background: #e2e8f0;
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* 좌상단 플로팅 검색바 */
+.floating-search {
+  position: fixed;
+  top: 14px;
+  left: 54px;
+  z-index: 1000;
+  width: min(370px, calc(100vw - 72px));
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.14);
+  padding: 10px;
+  backdrop-filter: blur(8px);
+}
+
+.search-row {
+  display: flex;
+  gap: 6px;
+}
+
+.search-row input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: #0f172a;
+  background: #f8fafc;
+  outline: none;
+  font-family: inherit;
+}
+
+.search-row input:focus {
+  border-color: #2563eb;
+  background: #ffffff;
+}
+
+.btn-primary {
+  border: none;
+  border-radius: 8px;
+  background: #2563eb;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 0 14px;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.btn-primary:hover {
+  background: #1d4ed8;
+}
+
+.search-results {
+  margin-top: 6px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #ffffff;
+  max-height: 240px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.sr-item {
+  width: 100%;
+  text-align: left;
+  border: none;
+  border-bottom: 1px solid #f1f5f9;
+  background: transparent;
+  padding: 8px 10px;
+  cursor: pointer;
+  font-family: inherit;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sr-item:last-child {
+  border-bottom: none;
+}
+
+.sr-item:hover {
+  background: #eff6ff;
+}
+
+.sr-item strong {
+  font-size: 12.5px;
+  color: #0f172a;
+}
+
+.sr-item span {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.sr-item.muted {
+  font-size: 12px;
+  color: #64748b;
+  cursor: default;
+}
+
+.status-row {
+  margin-top: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+  color: #475569;
+  padding: 0 2px;
+}
+
+.link-btn {
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #1e293b;
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  flex-shrink: 0;
+}
+
+.link-btn:hover {
+  border-color: #2563eb;
+  color: #2563eb;
+}
+
+/* 우상단 미니 컨트롤 */
+.floating-controls {
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.control-pill {
+  display: inline-flex;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  padding: 3px;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.12);
+  gap: 2px;
+}
+
+.pill-btn {
+  border: none;
+  background: transparent;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.pill-btn:hover {
+  color: #0f172a;
+  background: #f1f5f9;
+}
+
+.pill-btn.active {
+  background: #1e293b;
+  color: #ffffff;
+}
+
+.icon-pill {
+  border: 1px solid #cbd5e1;
+  background: rgba(255, 255, 255, 0.96);
+  color: #475569;
+  border-radius: 10px;
+  padding: 7px 11px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.12);
+}
+
+.icon-pill.active {
+  background: #fee2e2;
+  color: #b91c1c;
+  border-color: #fca5a5;
+}
+
+/* 좌하단 미니 범례 */
+.mini-legend {
+  position: fixed;
+  bottom: 18px;
+  left: 14px;
+  z-index: 1000;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  padding: 9px 12px;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 11.5px;
+  color: #1e293b;
+}
+
+.lg-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.lg-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+/* 하단 줌 안내 */
+.zoom-hint {
+  position: fixed;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  background: rgba(15, 23, 42, 0.88);
+  color: #f8fafc;
+  padding: 8px 15px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.25);
+  white-space: nowrap;
+}
+
+/* 우측 건물 정보 카드 */
+.info-card {
+  position: fixed;
+  top: 64px;
+  right: 14px;
+  z-index: 1000;
+  width: min(330px, calc(100vw - 28px));
+  max-height: calc(100vh - 84px);
+  overflow-y: auto;
+  background: rgba(255, 255, 255, 0.97);
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.18);
+  padding: 14px 16px;
+}
+
+.info-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  border-bottom: 1px solid #e2e8f0;
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+}
+
+.ic-sub {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  color: #1d4ed8;
+  background: #dbeafe;
+  padding: 2px 7px;
+  border-radius: 999px;
+  margin-bottom: 4px;
+}
+
+.info-head h2 {
+  font-size: 15.5px;
+  font-weight: 700;
+  color: #0f172a;
+  line-height: 1.3;
+}
+
+.ic-addr {
+  font-size: 12px;
+  color: #64748b;
+  margin-top: 3px;
+}
+
+.close-btn {
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  color: #475569;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.close-btn:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.info-list {
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  row-gap: 7px;
+  column-gap: 8px;
+  font-size: 12.5px;
+}
+
+.info-list dt {
+  color: #64748b;
+}
+
+.info-list dd {
+  color: #0f172a;
+  font-weight: 600;
+}
+
+/* 마커 & 툴팁 */
+.station-pin {
+  background: #dc2626;
+  color: #ffffff;
+  border: 2px solid #ffffff;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.28);
+}
+
+.bldg-tooltip {
+  background: rgba(15, 23, 42, 0.92);
+  color: #f8fafc;
+  border: none;
+  border-radius: 7px;
+  padding: 5px 9px;
+  font-size: 12px;
+  line-height: 1.35;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+
+.bldg-tooltip::before {
+  display: none;
+}
+
+@media (max-width: 780px) {
+  .floating-controls {
+    top: auto;
+    bottom: 14px;
+    right: 12px;
+  }
+}

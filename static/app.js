@@ -28,8 +28,17 @@
   };
 
   const BASEMAPS = {
-    dark: {
-      url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+    vworld_base: {
+      url: "/api/vworld/wmts/Base/{z}/{y}/{x}",
+      attribution: "&copy; 국토교통부 브이월드(V-World)",
+    },
+    vworld_hybrid: {
+      url: "/api/vworld/wmts/Satellite/{z}/{y}/{x}",
+      overlayUrl: "/api/vworld/wmts/Hybrid/{z}/{y}/{x}",
+      attribution: "&copy; 국토교통부 브이월드 위성·하이브리드",
+    },
+    voyager: {
+      url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
       attribution: "&copy; OpenStreetMap &copy; CARTO",
     },
     light: {
@@ -40,11 +49,32 @@
       url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
       attribution: "&copy; OpenStreetMap contributors",
     },
+    dark: {
+      url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+      attribution: "&copy; OpenStreetMap &copy; CARTO",
+    },
     satellite: {
       url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
       attribution: "&copy; Esri World Imagery",
     },
   };
+
+  const RI_CENTERS = [
+    ["원리", 36.6014, 127.2993],
+    ["상리", 36.6020, 127.3023],
+    ["명리", 36.6029, 127.3005],
+    ["평리", 36.6051, 127.3012],
+    ["교리", 36.6041, 127.2987],
+    ["정리", 36.5998, 127.2996],
+    ["남리", 36.5971, 127.2993],
+    ["침산리", 36.6022, 127.2920],
+    ["신흥리", 36.5959, 127.2912],
+    ["죽림리", 36.5916, 127.2953],
+    ["신안리", 36.6156, 127.2855],
+    ["서창리", 36.6076, 127.2901],
+    ["번암리", 36.5865, 127.2961],
+    ["봉산리", 36.6038, 127.2825],
+  ];
 
   const state = {
     rawBuildings: null,
@@ -56,6 +86,8 @@
     seasonItem: "계절:봄",
     humidity: 50,
     wind: 2.5,
+    fillOpacity: 0.78,
+    smartOpacity: true,
     search: "",
     ri: "ALL",
     grade: "ALL",
@@ -63,12 +95,23 @@
     highOnly: false,
     selectedId: null,
     hoveredLayer: null,
+    lastZoomDetail: false,
+    vworldLive: false,
+    isDefaultDataset: true,
     layerById: new Map(),
     pcyCache: new Map(),
   };
 
   // DOM 참조
   const el = {
+    vworldBadge: document.getElementById("vworld-badge"),
+    vworldSearchInput: document.getElementById("vworld-search-input"),
+    btnVworldSearch: document.getElementById("btn-vworld-search"),
+    vworldSearchResults: document.getElementById("vworld-search-results"),
+    toggleVworldLive: document.getElementById("toggle-vworld-live"),
+    btnFetchViewport: document.getElementById("btn-fetch-viewport"),
+    btnRestoreJochiwon: document.getElementById("btn-restore-jochiwon"),
+    vworldLiveStatus: document.getElementById("vworld-live-status"),
     statTotal: document.getElementById("stat-total"),
     statAvg: document.getElementById("stat-avg"),
     statHigh: document.getElementById("stat-high"),
@@ -85,6 +128,10 @@
     valHumidity: document.getElementById("val-humidity"),
     valWind: document.getElementById("val-wind"),
     basemapSelect: document.getElementById("basemap-select"),
+    sliderOpacity: document.getElementById("slider-opacity"),
+    valOpacity: document.getElementById("val-opacity"),
+    toggleSmartOpacity: document.getElementById("toggle-smart-opacity"),
+    layerRiLabels: document.getElementById("layer-ri-labels"),
     layerStations: document.getElementById("layer-stations"),
     layerHydrants: document.getElementById("layer-hydrants"),
     layerBoundary: document.getElementById("layer-boundary"),
@@ -146,22 +193,24 @@
   const map = L.map("map", {
     center: [36.6015, 127.2945],
     zoom: 15,
-    minZoom: 13,
+    minZoom: 7,
     maxZoom: 19,
     preferCanvas: true,
     renderer: canvasRenderer,
   });
 
-  let tileLayer = L.tileLayer(BASEMAPS.dark.url, {
-    attribution: BASEMAPS.dark.attribution,
+  let tileLayer = L.tileLayer(BASEMAPS.voyager.url, {
+    attribution: BASEMAPS.voyager.attribution,
     maxZoom: 19,
   }).addTo(map);
+  let tileOverlayLayer = null;
 
   const boundaryGroup = L.layerGroup().addTo(map);
   const buildingGroup = L.layerGroup().addTo(map);
   const routeGroup = L.layerGroup().addTo(map);
-  const hydrantGroup = L.layerGroup().addTo(map);
+  const hydrantGroup = L.layerGroup();
   const stationGroup = L.layerGroup().addTo(map);
+  const riLabelGroup = L.layerGroup().addTo(map);
 
   let buildingGeoJsonLayer = null;
 
@@ -346,20 +395,42 @@
 
     if (isHighlighted || isSelected) {
       return {
-        color: isSelected ? "#38bdf8" : "#ffffff",
-        weight: isSelected ? 3 : 2.2,
+        color: isSelected ? "#0284c7" : "#ffffff",
+        weight: isSelected ? 3 : 2.3,
         opacity: 1,
         fillColor,
         fillOpacity: 0.94,
       };
     }
 
+    let computedFillOpacity = state.fillOpacity;
+    if (state.smartOpacity) {
+      if (state.mode === "risk") {
+        if (evalRes.dynamicGrade === "위험(A)" || evalRes.dynamicGrade === "경고(B)") {
+          computedFillOpacity = clamp(state.fillOpacity + 0.14, 0.25, 0.95);
+        } else if (evalRes.dynamicGrade === "주의(C)") {
+          computedFillOpacity = clamp(state.fillOpacity * 0.85, 0.2, 0.95);
+        } else {
+          computedFillOpacity = clamp(state.fillOpacity * 0.54, 0.15, 0.75);
+        }
+      } else if (state.mode === "pcy") {
+        if (evalRes.maxLift >= 3.0) {
+          computedFillOpacity = clamp(state.fillOpacity + 0.14, 0.25, 0.95);
+        } else if (evalRes.maxLift >= 2.0) {
+          computedFillOpacity = clamp(state.fillOpacity * 0.85, 0.2, 0.95);
+        } else {
+          computedFillOpacity = clamp(state.fillOpacity * 0.54, 0.15, 0.75);
+        }
+      }
+    }
+
+    const isZoomedIn = map.getZoom() >= 16;
     return {
-      color: "#0f172a",
-      weight: 0.65,
-      opacity: isHighDimmed ? 0.18 : 0.75,
+      color: "#1e293b",
+      weight: isZoomedIn ? 1.05 : 0.4,
+      opacity: isHighDimmed ? 0.18 : isZoomedIn ? 0.8 : 0.55,
       fillColor,
-      fillOpacity: isHighDimmed ? 0.1 : 0.78,
+      fillOpacity: isHighDimmed ? 0.09 : computedFillOpacity,
     };
   }
 
@@ -678,7 +749,7 @@
       ["바닥 / 연면적", `${Math.round(p.footprint_area_m2 || 0)}㎡ / ${Math.round(p.total_area_m2 || 0)}㎡`],
       ["스프링클러", p.has_sprinkler ? "설치됨" : "미설치"],
       ["반경 30m 인접", `${p.neighbor_count_30m || 0}동`],
-      ["OSM 원본 태그", p.osm_building_tag || "yes"],
+      ["데이터 출처", p.data_source || p.osm_building_tag || "브이월드 GIS"],
     ];
 
     el.ddAttrs.innerHTML = "";
@@ -934,6 +1005,34 @@
         circle.addTo(hydrantGroup);
       }
     });
+    syncZoomClutter();
+  }
+
+  function renderRiLabels() {
+    riLabelGroup.clearLayers();
+    RI_CENTERS.forEach(([riName, lat, lon]) => {
+      L.marker([lat, lon], {
+        interactive: false,
+        icon: L.divIcon({
+          className: "ri-label",
+          html: riName,
+          iconSize: null,
+        }),
+      }).addTo(riLabelGroup);
+    });
+  }
+
+  function syncZoomClutter() {
+    const isZoomedIn = map.getZoom() >= 16;
+    if (el.layerHydrants.checked && isZoomedIn) {
+      if (!map.hasLayer(hydrantGroup)) hydrantGroup.addTo(map);
+    } else {
+      if (map.hasLayer(hydrantGroup)) map.removeLayer(hydrantGroup);
+    }
+    if (state.lastZoomDetail !== isZoomedIn) {
+      state.lastZoomDetail = isZoomedIn;
+      restyleBuildingsOnly();
+    }
   }
 
   function renderPcyReportModal() {
@@ -943,7 +1042,6 @@
     }
     const meta = state.pcyData.metadata;
     const bench = meta.benchmark || {};
-    const ap = bench.apriori || {};
     const pc = bench.pcy || {};
     const topRules = (state.pcyData.rules || []).slice(0, 12);
 
@@ -966,30 +1064,37 @@
         <div class="bench-kpi"><span>원본 소방청 데이터</span><strong>${meta.n_total_fires.toLocaleString()}건</strong></div>
         <div class="bench-kpi"><span>건축물 화재 분석</span><strong>${meta.n_building_fires.toLocaleString()}건</strong></div>
         <div class="bench-kpi"><span>PCY C2 후보 절감률</span><strong>${((bench.c2_reduction || 0) * 100).toFixed(1)}%</strong></div>
-        <div class="bench-kpi"><span>지도 탑재 복합 규칙</span><strong>${meta.rule_count}개</strong></div>
+        <div class="bench-kpi"><span>추출 규칙 (k=2 쌍)</span><strong>${meta.rule_count}개</strong></div>
       </div>
 
       <div class="discard-box">
-        <strong>💡 빅데이터 방법론 결합 핵심 (The Discard 복원):</strong><br/>
-        기존 <code>A-Priori · PCY</code> 장바구니 모델은 연산을 위해 <em>정확한 소방서 거리(m), 인접 건물 밀집 수, 준공연식</em> 같은 연속 수치를 버렸습니다(The Discard).
-        본 시스템은 <strong>지도 공간 연산으로 연속 물리 수치(0~70점)를 복원</strong>하고, 여기에 <strong>PCY가 115,237건에서 찾아낸 복합 시너지 배수(0~30점)</strong>를 결합해 단일 가중치보다 정밀한 위험 평가를 제공합니다.
+        <strong>💡 PCY 단독 (k=2) + 공간 빅데이터 결합 원리:</strong><br/>
+        <code>PCY</code> 알고리즘은 Pass 1에서 모든 2-항목 쌍을 <strong>${(pc.n_buckets || 32771).toLocaleString()}개 해시 버킷</strong>으로 압축해 비트맵을 만들고,
+        Pass 2에서 빈발 버킷을 통과한 <code>k=2</code> 위험 쌍(<strong>L2</strong>)만 고속 추출합니다.
+        여기에 장바구니 모델이 버린(<em>The Discard</em>) <strong>정확한 거리(m)·밀집도·연식 연속 수치(0~70점)</strong>를 지도 공간 연산으로 복원해 결합했습니다.
       </div>
 
-      <h3>1. A-Priori vs PCY 알고리즘 벤치마크 (건축물 화재 ${meta.n_building_fires.toLocaleString()}건, min_support 1.0%)</h3>
+      <h3>1. PCY 단독 (k=2) 해시·비트맵 실행 요약 (건축물 화재 ${meta.n_building_fires.toLocaleString()}건, min_support 1.0%)</h3>
       <table class="bench-table">
         <thead>
-          <tr><th>알고리즘</th><th>L1 빈발 아이템</th><th>C2 후보 쌍</th><th>L2 빈발 쌍</th><th>실행 시간</th><th>결과 일치</th></tr>
+          <tr><th>알고리즘 / 차수</th><th>L1 빈발 아이템</th><th>전체 가능 쌍</th><th>비트맵 통과 C2 후보</th><th>확정 L2 빈발 쌍</th><th>소요 시간</th></tr>
         </thead>
         <tbody>
-          <tr><td>A-Priori (교재 §6.2)</td><td>${ap.l1_frequent_items || "-"}</td><td>${(ap.c2_candidates || 0).toLocaleString()}</td><td>${(ap.l2_frequent_pairs || 0).toLocaleString()}</td><td>${ap.seconds || "-"}초</td><td rowspan="2"><strong>${bench.results_identical ? "100% 일치" : "불일치"}</strong></td></tr>
-          <tr><td>PCY 해시·비트맵 (§6.3.1)</td><td>${pc.l1_frequent_items || "-"}</td><td><strong>${(pc.c2_candidates || 0).toLocaleString()}</strong></td><td>${(pc.l2_frequent_pairs || 0).toLocaleString()}</td><td>${pc.seconds || "-"}초</td></tr>
+          <tr>
+            <td><strong>PCY 단독 (k=${meta.max_k || 2})</strong></td>
+            <td>${pc.l1_frequent_items || "-"}개</td>
+            <td>${(pc.naive_c2_pairs || bench.naive_c2_pairs || 0).toLocaleString()}쌍</td>
+            <td><strong>${(pc.c2_candidates || 0).toLocaleString()}쌍</strong> (${((bench.c2_reduction || 0) * 100).toFixed(1)}% 절감)</td>
+            <td>${(pc.l2_frequent_pairs || 0).toLocaleString()}쌍</td>
+            <td>${pc.seconds || "-"}초</td>
+          </tr>
         </tbody>
       </table>
 
-      <h3>2. 주요 발굴 복합 화재 위험 규칙 (상위 12개)</h3>
+      <h3>2. 주요 발굴 k=2 복합 화재 위험 쌍 (상위 12개)</h3>
       <table class="bench-table">
         <thead>
-          <tr><th>#</th><th>복합 조건 조합</th><th>위험 배수(Lift)</th><th>주요 발화요인</th><th>주요 연소확대물</th></tr>
+          <tr><th>#</th><th>k=2 조건 쌍</th><th>위험 배수(Lift)</th><th>주요 발화요인</th><th>주요 연소확대물</th></tr>
         </thead>
         <tbody>${rowsHtml}</tbody>
       </table>
@@ -1002,13 +1107,152 @@
       if (f.properties.subdistrict) ris.add(f.properties.subdistrict);
     });
     const sorted = Array.from(ris).sort((a, b) => a.localeCompare(b, "ko"));
-    el.filterRi.innerHTML = '<option value="ALL">전체 (조치원읍)</option>';
+    const allLabel = state.isDefaultDataset ? "전체 (조치원읍)" : "전체 (현재 조회구역)";
+    el.filterRi.innerHTML = `<option value="ALL">${allLabel}</option>`;
     sorted.forEach((ri) => {
       const opt = document.createElement("option");
       opt.value = ri;
       opt.textContent = ri;
       el.filterRi.appendChild(opt);
     });
+  }
+
+  let viewportAbortCtrl = null;
+  let moveFetchTimer = null;
+
+  function renderLiveStations(stations) {
+    stationGroup.clearLayers();
+    (stations || []).forEach((st) => {
+      const marker = L.marker([st.lat, st.lon], {
+        icon: L.divIcon({
+          className: "station-marker",
+          html: `🚒 ${st.name}`,
+          iconSize: null,
+        }),
+      });
+      marker.bindPopup(
+        `<strong>${st.name}</strong><br/>구분: ${st.type || "소방거점"}<br/>주소: ${st.address || "-"}<br/>출처: ${st.source || "브이월드"}`
+      );
+      marker.addTo(stationGroup);
+    });
+  }
+
+  async function fetchViewportBuildings(forceZoom = false) {
+    if (map.getZoom() < 16) {
+      if (forceZoom) {
+        map.setZoom(16);
+      } else {
+        el.vworldLiveStatus.textContent = "건물 폴리곤 조회를 위해 지도를 조금 더 확대(줌 16 이상)해 주세요.";
+        return;
+      }
+    }
+
+    const b = map.getBounds();
+    const bbox = [
+      b.getWest().toFixed(5),
+      b.getSouth().toFixed(5),
+      b.getEast().toFixed(5),
+      b.getNorth().toFixed(5),
+    ].join(",");
+
+    if (viewportAbortCtrl) {
+      viewportAbortCtrl.abort();
+    }
+    viewportAbortCtrl = new AbortController();
+    el.vworldLiveStatus.textContent = "📡 브이월드 공식 건물·소방거점 데이터 불러오는 중...";
+
+    try {
+      const resp = await fetch(`/api/vworld/buildings?bbox=${encodeURIComponent(bbox)}`, {
+        signal: viewportAbortCtrl.signal,
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        throw new Error(data.error || "브이월드 건물 조회 실패");
+      }
+
+      state.isDefaultDataset = false;
+      state.ri = "ALL";
+      state.selectedId = null;
+      routeGroup.clearLayers();
+      el.detailDrawer.classList.add("hidden");
+
+      state.rawBuildings = data.buildings;
+      state.pcyCache.clear();
+
+      // 타 지역 조회 시 조치원 전용 경계·리 라벨 숨김
+      if (map.hasLayer(riLabelGroup)) map.removeLayer(riLabelGroup);
+      if (map.hasLayer(boundaryGroup)) map.removeLayer(boundaryGroup);
+      renderLiveStations(data.stations);
+
+      populateSubdistrictOptions();
+      renderBuildings(false);
+
+      const total = data.meta?.total_buildings || 0;
+      const ledger = data.meta?.ledger_matched || 0;
+      const sec = data.meta?.elapsed_sec ?? "-";
+      el.vworldLiveStatus.textContent = `✅ 브이월드 ${total.toLocaleString()}동 로드 (대장실측 ${ledger.toLocaleString()}동 · ${sec}초)`;
+      el.modalDatasetInfo.textContent = `브이월드 전국 실시간 조회 · ${total.toLocaleString()}동 (대장실측 ${ledger.toLocaleString()}동)`;
+    } catch (err) {
+      if (err.name === "AbortError") return;
+      el.vworldLiveStatus.textContent = `⚠️ ${err.message}`;
+    }
+  }
+
+  function restoreDefaultJochiwon(fly = true) {
+    if (!state.defaultBuildings) return;
+    state.vworldLive = false;
+    state.isDefaultDataset = true;
+    state.ri = "ALL";
+    state.selectedId = null;
+    el.toggleVworldLive.checked = false;
+    routeGroup.clearLayers();
+    el.detailDrawer.classList.add("hidden");
+
+    state.rawBuildings = structuredClone(state.defaultBuildings);
+    state.pcyCache.clear();
+    populateSubdistrictOptions();
+    renderInfrastructure();
+    if (el.layerRiLabels.checked && !map.hasLayer(riLabelGroup)) riLabelGroup.addTo(map);
+    if (el.layerBoundary.checked && !map.hasLayer(boundaryGroup)) boundaryGroup.addTo(map);
+    renderBuildings(false);
+
+    const cnt = state.defaultBuildings.features.length;
+    el.vworldLiveStatus.textContent = `기본: 조치원읍 브이월드 공식 데이터 (${cnt.toLocaleString()}동)`;
+    if (fly) {
+      map.flyTo([36.6015, 127.2945], 15, { duration: 0.6 });
+    }
+  }
+
+  async function runVWorldPlaceSearch() {
+    const q = el.vworldSearchInput.value.trim();
+    if (!q) return;
+    el.vworldSearchResults.innerHTML = '<div class="vw-item muted">검색 중...</div>';
+    el.vworldSearchResults.classList.remove("hidden");
+    try {
+      const resp = await fetch(`/api/vworld/search?q=${encodeURIComponent(q)}`);
+      const data = await resp.json();
+      const items = data.items || [];
+      if (items.length === 0) {
+        el.vworldSearchResults.innerHTML = '<div class="vw-item muted">검색 결과가 없습니다.</div>';
+        return;
+      }
+      el.vworldSearchResults.innerHTML = "";
+      items.forEach((it) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "vw-item";
+        btn.innerHTML = `<strong>${it.title}</strong><span>${it.address || it.category || ""}</span>`;
+        btn.addEventListener("click", () => {
+          el.vworldSearchResults.classList.add("hidden");
+          state.vworldLive = true;
+          el.toggleVworldLive.checked = true;
+          map.flyTo([it.lat, it.lon], 17, { duration: 0.7 });
+        });
+        el.vworldSearchResults.appendChild(btn);
+      });
+    } catch (err) {
+      el.vworldSearchResults.innerHTML = `<div class="vw-item muted">검색 오류: ${err.message}</div>`;
+    }
   }
 
   function parseCsv(text) {
@@ -1202,12 +1446,75 @@
       renderBuildings(false);
     });
 
-    // 배경지도 & 레이어 토글
+    // 배경지도 & 가독성 레이어 토글
     el.basemapSelect.addEventListener("change", () => {
-      const spec = BASEMAPS[el.basemapSelect.value] || BASEMAPS.dark;
+      const spec = BASEMAPS[el.basemapSelect.value] || BASEMAPS.voyager;
       map.removeLayer(tileLayer);
+      if (tileOverlayLayer) {
+        map.removeLayer(tileOverlayLayer);
+        tileOverlayLayer = null;
+      }
       tileLayer = L.tileLayer(spec.url, { attribution: spec.attribution, maxZoom: 19 }).addTo(map);
       tileLayer.bringToBack();
+      if (spec.overlayUrl) {
+        tileOverlayLayer = L.tileLayer(spec.overlayUrl, { maxZoom: 19, pane: "tilePane" }).addTo(map);
+      }
+    });
+
+    // 브이월드 전국 실시간 탐색 이벤트
+    el.btnVworldSearch.addEventListener("click", runVWorldPlaceSearch);
+    el.vworldSearchInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        runVWorldPlaceSearch();
+      }
+    });
+    document.addEventListener("click", (e) => {
+      if (!e.target.closest(".vworld-search-wrap")) {
+        el.vworldSearchResults.classList.add("hidden");
+      }
+    });
+
+    el.toggleVworldLive.addEventListener("change", () => {
+      state.vworldLive = el.toggleVworldLive.checked;
+      if (state.vworldLive) {
+        fetchViewportBuildings(true);
+      } else {
+        el.vworldLiveStatus.textContent = "자동 로딩 일시 중지됨 ('현재 화면 불러오기' 또는 '조치원 기본' 선택)";
+      }
+    });
+
+    el.btnFetchViewport.addEventListener("click", () => {
+      fetchViewportBuildings(true);
+    });
+
+    el.btnRestoreJochiwon.addEventListener("click", () => {
+      restoreDefaultJochiwon(true);
+    });
+
+    map.on("moveend", () => {
+      if (!state.vworldLive) return;
+      clearTimeout(moveFetchTimer);
+      moveFetchTimer = setTimeout(() => {
+        fetchViewportBuildings(false);
+      }, 280);
+    });
+
+    el.sliderOpacity.addEventListener("input", () => {
+      const pct = Number(el.sliderOpacity.value);
+      state.fillOpacity = pct / 100;
+      el.valOpacity.textContent = `${pct}%`;
+      restyleBuildingsOnly();
+    });
+
+    el.toggleSmartOpacity.addEventListener("change", () => {
+      state.smartOpacity = el.toggleSmartOpacity.checked;
+      restyleBuildingsOnly();
+    });
+
+    el.layerRiLabels.addEventListener("change", () => {
+      if (el.layerRiLabels.checked) riLabelGroup.addTo(map);
+      else map.removeLayer(riLabelGroup);
     });
 
     el.layerStations.addEventListener("change", () => {
@@ -1215,19 +1522,28 @@
       else map.removeLayer(stationGroup);
     });
 
-    el.layerHydrants.addEventListener("change", () => {
-      if (el.layerHydrants.checked) hydrantGroup.addTo(map);
-      else map.removeLayer(hydrantGroup);
-    });
+    el.layerHydrants.addEventListener("change", syncZoomClutter);
 
     el.layerBoundary.addEventListener("change", () => {
       if (el.layerBoundary.checked) boundaryGroup.addTo(map);
       else map.removeLayer(boundaryGroup);
     });
 
+    map.on("zoomend", syncZoomClutter);
+
     // 빠른 이동
     document.querySelectorAll(".jump-chip").forEach((btn) => {
       btn.addEventListener("click", () => {
+        if (btn.dataset.restore === "1") {
+          restoreDefaultJochiwon(true);
+          return;
+        }
+        if (btn.dataset.live === "1") {
+          state.vworldLive = true;
+          el.toggleVworldLive.checked = true;
+        } else if (!state.isDefaultDataset) {
+          restoreDefaultJochiwon(false);
+        }
         map.flyTo(
           [Number(btn.dataset.lat), Number(btn.dataset.lon)],
           Number(btn.dataset.zoom),
@@ -1315,13 +1631,8 @@
     });
 
     el.btnResetDataset.addEventListener("click", () => {
-      if (!state.defaultBuildings) return;
-      state.rawBuildings = structuredClone(state.defaultBuildings);
-      state.pcyCache.clear();
-      populateSubdistrictOptions();
-      renderBuildings(false);
-      map.flyTo([36.6015, 127.2945], 15, { duration: 0.6 });
-      el.uploadStatus.textContent = "기본 조치원읍 데이터셋으로 복원되었습니다.";
+      restoreDefaultJochiwon(true);
+      el.uploadStatus.textContent = "기본 조치원읍 브이월드 데이터셋으로 복원되었습니다.";
     });
   }
 
@@ -1347,9 +1658,11 @@
 
       const meta = buildings.metadata || {};
       const pcyMeta = pcyJson?.metadata || {};
-      el.modalDatasetInfo.textContent = `${meta.source_mode || "OSM"} · ${buildings.features.length.toLocaleString()}동 + 소방청 ${(pcyMeta.n_total_fires || 0).toLocaleString()}건 기반 PCY 규칙 ${pcyMeta.rule_count || 0}개 연동`;
+      el.modalDatasetInfo.textContent = `${meta.source_mode || "브이월드"} · ${buildings.features.length.toLocaleString()}동 + 소방청 ${(pcyMeta.n_total_fires || 0).toLocaleString()}건 기반 PCY (k=${pcyMeta.max_k || 2}) 규칙 ${pcyMeta.rule_count || 0}개 연동`;
+      el.vworldLiveStatus.textContent = `기본: 조치원읍 ${meta.source_mode || "브이월드"} (${buildings.features.length.toLocaleString()}동)`;
 
       populateSubdistrictOptions();
+      renderRiLabels();
       renderInfrastructure();
       renderBuildings(false);
     } catch (err) {

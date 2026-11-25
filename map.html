@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>대한민국 건물 지도 (브이월드 GIS)</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <link rel="stylesheet" href="static/map_only.css" />
+</head>
+<body>
+  <div id="map"></div>
+
+  <!-- 좌상단 플로팅 검색바 -->
+  <div class="floating-search" id="search-box">
+    <div class="search-row">
+      <input
+        id="search-input"
+        type="search"
+        placeholder="전국 장소·도로명주소 검색 (예: 강남역, 세종여고, 광장시장)"
+        autocomplete="off"
+      />
+      <button id="btn-search" class="btn-primary" type="button">검색</button>
+    </div>
+    <div id="search-results" class="search-results hidden"></div>
+    <div class="status-row">
+      <span id="status-text">현재 화면 건물 불러오는 중...</span>
+      <button id="btn-home" class="link-btn" type="button">조치원</button>
+    </div>
+  </div>
+
+  <!-- 우상단 미니 컨트롤 -->
+  <div class="floating-controls">
+    <div class="control-pill" role="group" aria-label="배경지도">
+      <button class="pill-btn active" data-basemap="vworld_base" type="button">일반지도</button>
+      <button class="pill-btn" data-basemap="vworld_hybrid" type="button">위성</button>
+      <button class="pill-btn" data-basemap="voyager" type="button">영문/심플</button>
+    </div>
+
+    <div class="control-pill" role="group" aria-label="건물 색상">
+      <button class="pill-btn active" data-color="clean" type="button">단색</button>
+      <button class="pill-btn" data-color="usage" type="button">용도</button>
+      <button class="pill-btn" data-color="structure" type="button">구조</button>
+      <button class="pill-btn" data-color="age" type="button">연식</button>
+    </div>
+
+    <button id="btn-toggle-stations" class="icon-pill active" type="button" title="소방거점 표시 전환">
+      🚒 소방서
+    </button>
+  </div>
+
+  <!-- 좌하단 미니 범례 (용도/구조/연식 모드에서만 표시) -->
+  <div id="mini-legend" class="mini-legend hidden"></div>
+
+  <!-- 하단 줌 안내 배지 -->
+  <div id="zoom-hint" class="zoom-hint hidden">
+    지도를 확대(줌 16 이상)하면 현재 화면의 브이월드 건물이 자동으로 표시됩니다.
+  </div>
+
+  <!-- 우측 건물 정보 카드 (클릭 시 표시) -->
+  <aside id="info-card" class="info-card hidden" aria-label="선택 건물 정보">
+    <div class="info-head">
+      <div>
+        <span id="ic-sub" class="ic-sub">-</span>
+        <h2 id="ic-name">건물명</h2>
+        <p id="ic-addr" class="ic-addr">-</p>
+      </div>
+      <button id="btn-close-info" class="close-btn" type="button" aria-label="닫기">✕</button>
+    </div>
+    <dl id="ic-list" class="info-list"></dl>
+  </aside>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="static/map_only.js"></script>
+</body>
+</html>

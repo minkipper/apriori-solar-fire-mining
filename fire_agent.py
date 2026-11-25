@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""대화형 화재 위험 진단 AI 에이전트 (Fire Risk Agent)
+"""대화형 화재 위험 진단 AI 에이전트 (k=2 통합 버전)
 
 사용자의 일상적인 자연어 질문을 받아:
 1. Upstage Solar가 질문에서 조건(장소, 피해 기준, 상황 등)을 파악
-2. 115,237건 실제 데이터에서 Apriori/PCY 알고리즘으로 조건 조합 및 피해 위험도(배수) 계산
+2. 115,237건 실제 데이터에서 PCY 또는 A-Priori(k=2) 알고리즘으로 2-항목 위험 쌍(L2) 및 피해 위험도(배수) 계산
 3. Solar가 결과를 종합하여 일상 언어로 친절하게 답변 + 맞춤형 예방 체크리스트 제공
 
 실행:
-  python fire_agent.py
+  python fire_agent.py                   # 기본값: PCY (k=2)
+  python fire_agent.py --algo apriori    # A-Priori 단독 (k=2)
 """
 import argparse
 import csv
@@ -16,7 +17,6 @@ import json
 import os
 import sys
 import time
-import urllib.error
 import urllib.request
 from collections import Counter
 from datetime import datetime
@@ -27,6 +27,7 @@ DEFAULT_GZ = os.path.join(HERE, "data", "소방청_화재현황_20231231.csv.gz"
 DEFAULT_CSV = os.path.join(HERE, "data", "소방청_화재현황_20231231.csv")
 DATA_PATH = DEFAULT_GZ if os.path.exists(DEFAULT_GZ) else DEFAULT_CSV
 SOLAR_URL = "https://api.upstage.ai/v1/chat/completions"
+
 
 # ───────────────────────── 환경설정 및 유틸 ─────────────────────────
 def load_env(path=os.path.join(HERE, ".env")):
@@ -41,11 +42,13 @@ def load_env(path=os.path.join(HERE, ".env")):
                 env[k.strip()] = v.strip()
     return env
 
+
 def to_float(s):
     try:
         return float((s or "").replace(",", "").strip())
     except ValueError:
         return None
+
 
 def parse_dt(s):
     try:
@@ -53,11 +56,14 @@ def parse_dt(s):
     except ValueError:
         return None
 
+
 # ───────────────────────── 데이터 로딩 & 장바구니 ─────────────────────────
 SKIP_VALUES = {"", "미상", "해당없음", "기타", "N"}
 
+
 def build_basket(r):
     items = set()
+
     def add(prefix, val):
         v = (val or "").strip()
         if v not in SKIP_VALUES:
@@ -102,7 +108,113 @@ def build_basket(r):
         items.add("소방서거리:" + ("5km이상" if dist >= 5 else "5km미만"))
     return items
 
+
+# ───────────────────────── A-Priori & PCY 알고리즘 (k=2) ─────────────────────────
+def pair_hash(a, b, n_buckets):
+    return (a * 10007 + b) % n_buckets
+
+
+def apriori_k2(baskets, min_count):
+    """표준 A-Priori 알고리즘 (교재 §6.2, k=2): Pass 1 (L1) -> Pass 2 (C2 -> L2)."""
+    t0 = time.perf_counter()
+
+    c1 = Counter()
+    for b in baskets:
+        c1.update(b)
+    l1 = sorted(i for i, c in c1.items() if c >= min_count)
+    frequent = {(i,): c1[i] for i in l1}
+
+    cand2 = set(combinations(l1, 2))
+    l1set = set(l1)
+    c2 = Counter()
+    for b in baskets:
+        fb = [i for i in b if i in l1set]
+        if len(fb) < 2:
+            continue
+        for p in combinations(fb, 2):
+            if p in cand2:
+                c2[p] += 1
+    l2 = {p: c for p, c in c2.items() if c >= min_count}
+    frequent.update(l2)
+
+    stats = {
+        "algorithm": "A-Priori",
+        "max_k": 2,
+        "c1_items": len(c1),
+        "l1_frequent_items": len(l1),
+        "c2_candidates": len(cand2),
+        "l2_frequent_pairs": len(l2),
+        "seconds": round(time.perf_counter() - t0, 3),
+    }
+    return frequent, stats
+
+
+def pcy_k2(baskets, min_count, n_buckets=32_771):
+    """PCY (Park-Chen-Yu) 알고리즘 (교재 §6.3.1, k=2):
+    Pass 1에서 해시 버킷 카운트 -> 비트맵(Bitmap)으로 C2 후보 가지치기 -> Pass 2 L2 추출
+    """
+    t0 = time.perf_counter()
+
+    c1 = Counter()
+    bucket = [0] * n_buckets
+    for b in baskets:
+        c1.update(b)
+        for a, c in combinations(b, 2):
+            bucket[pair_hash(a, c, n_buckets)] += 1
+
+    l1 = sorted(i for i, c in c1.items() if c >= min_count)
+    frequent = {(i,): c1[i] for i in l1}
+
+    bitmap = [c >= min_count for c in bucket]
+    naive_c2_pairs = len(l1) * (len(l1) - 1) // 2
+    cand2 = {(a, c) for a, c in combinations(l1, 2) if bitmap[pair_hash(a, c, n_buckets)]}
+
+    l1set = set(l1)
+    c2 = Counter()
+    for b in baskets:
+        fb = [i for i in b if i in l1set]
+        if len(fb) < 2:
+            continue
+        for p in combinations(fb, 2):
+            if p in cand2:
+                c2[p] += 1
+    l2 = {p: c for p, c in c2.items() if c >= min_count}
+    frequent.update(l2)
+
+    c2_reduction = (1.0 - len(cand2) / naive_c2_pairs) if naive_c2_pairs else 0.0
+    stats = {
+        "algorithm": "PCY",
+        "max_k": 2,
+        "n_buckets": n_buckets,
+        "c1_items": len(c1),
+        "l1_frequent_items": len(l1),
+        "naive_c2_pairs": naive_c2_pairs,
+        "bitmap_frequent_buckets": sum(bitmap),
+        "c2_candidates": len(cand2),
+        "l2_frequent_pairs": len(l2),
+        "c2_reduction": c2_reduction,
+        "seconds": round(time.perf_counter() - t0, 3),
+    }
+    return frequent, stats
+
+
+def count_pairs(baskets, pairs):
+    """추출된 빈발 2-항목 쌍(L2)이 전체 장바구니에서 몇 번 등장하는지 카운트."""
+    relevant = {i for p in pairs for i in p}
+    counts = Counter()
+    for b in baskets:
+        fb = [i for i in b if i in relevant]
+        if len(fb) < 2:
+            continue
+        for p in combinations(fb, 2):
+            if p in pairs:
+                counts[p] += 1
+    return counts
+
+
 class FireDataset:
+    """소방청 화재현황 데이터를 로드하고 선택한 k=2 알고리즘(pcy/apriori)으로 위험 쌍을 조회하는 데이터셋."""
+
     def __init__(self, data_path=DATA_PATH):
         print(f"⏳ 115,237건 소방청 화재 데이터 로딩 중... ({os.path.basename(data_path)})")
         t0 = time.perf_counter()
@@ -124,7 +236,10 @@ class FireDataset:
         self.p95 = props[int(len(props) * 0.95)] if props else 0
         print(f"✅ 데이터 로딩 완료! 총 {len(self.rows):,}건 (소요 시간: {time.perf_counter()-t0:.2f}초)")
 
-    def query_patterns(self, place_keyword="", target="property", top_k=10):
+    def query_patterns(self, place_keyword="", target="property", top_k=10, max_item_support=0.85, algo="pcy"):
+        if algo not in ("pcy", "apriori"):
+            raise ValueError(f"지원하지 않는 알고리즘입니다: {algo}")
+
         # 1. 장소 필터링
         filtered = []
         for r in self.rows:
@@ -149,55 +264,53 @@ class FireDataset:
         if n_heavy < 5:
             return None, f"해당 장소에서 {target_desc} 사례가 {n_heavy}건으로 너무 적습니다."
 
-        # 3. 장바구니 인덱싱 & Apriori 마이닝
-        baskets = [r["basket"] for r in filtered]
+        # 3. 장바구니 정수 인코딩 (지지도 85% 초과의 너무 흔한 단일 아이템 제외)
+        raw_baskets = [r["basket"] for r in filtered]
+        item_count = Counter(i for b in raw_baskets for i in b)
+        vocab = sorted(i for i, c in item_count.items() if c / n <= max_item_support)
+        idx = {name: k for k, name in enumerate(vocab)}
+        baskets = [tuple(sorted(idx[i] for i in b if i in idx)) for b in raw_baskets]
         heavy_baskets = [b for b, f in zip(baskets, heavy_flags) if f]
 
-        # 큰 피해 화재 내 2~3개 조합 빈도 측정
+        # 4. k=2 알고리즘 실행 (L1 -> C2 -> L2)
+        miner = pcy_k2 if algo == "pcy" else apriori_k2
         min_heavy_count = max(3, int(n_heavy * 0.03))
-        c_heavy = Counter()
-        for b in heavy_baskets:
-            for k in (2, 3):
-                for comb in combinations(sorted(b), k):
-                    c_heavy[comb] += 1
-
-        freq_combos = {c: count for c, count in c_heavy.items() if count >= min_heavy_count}
-        if not freq_combos:
+        freq, stats = miner(heavy_baskets, min_heavy_count)
+        freq_pairs = {s: cnt for s, cnt in freq.items() if len(s) == 2}
+        if not freq_pairs:
             min_heavy_count = max(2, int(n_heavy * 0.01))
-            freq_combos = {c: count for c, count in c_heavy.items() if count >= min_heavy_count}
+            freq, stats = miner(heavy_baskets, min_heavy_count)
+            freq_pairs = {s: cnt for s, cnt in freq.items() if len(s) == 2}
 
-        # 전체 집합에서 해당 조합 출현 빈도 측정 (Lift 및 배수 계산)
-        c_total = Counter()
-        target_combos = set(freq_combos.keys())
-        for b in baskets:
-            for k in (2, 3):
-                for comb in combinations(sorted(b), k):
-                    if comb in target_combos:
-                        c_total[comb] += 1
+        # 5. 전체 집합에서 해당 빈발 2-항목 쌍 출현 빈도 측정 (향상도/배수 계산)
+        c_total = count_pairs(baskets, set(freq_pairs))
 
         n_rest = n - n_heavy
         results = []
-        for comb, ch in freq_combos.items():
-            crest = c_total[comb] - ch
+        for pair, ch in freq_pairs.items():
+            crest = c_total[pair] - ch
             sup_h = ch / n_heavy
             sup_r = (crest + 0.5) / n_rest
             ratio = sup_h / sup_r
             results.append({
-                "items": list(comb),
+                "items": [vocab[i] for i in pair],
                 "count_heavy": ch,
                 "sup_heavy": sup_h,
                 "sup_rest": sup_r,
-                "ratio": ratio
+                "ratio": ratio,
             })
 
         results.sort(key=lambda x: (-x["ratio"], -x["count_heavy"]))
         return {
+            "algo": algo,
             "place": place_keyword or "전체",
             "total_count": n,
             "heavy_count": n_heavy,
             "target_desc": target_desc,
-            "top_combos": results[:top_k]
+            "stats": stats,
+            "top_combos": results[:top_k],
         }, None
+
 
 # ───────────────────────── Upstage Solar API 연동 ─────────────────────────
 def call_solar(api_key, model, messages, temperature=0.3):
@@ -208,11 +321,12 @@ def call_solar(api_key, model, messages, temperature=0.3):
     }).encode("utf-8")
     req = urllib.request.Request(
         SOLAR_URL, data=body,
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=60) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     return data["choices"][0]["message"]["content"]
+
 
 def parse_user_intent(user_msg, api_key, model):
     system = (
@@ -223,7 +337,7 @@ def parse_user_intent(user_msg, api_key, model):
     )
     res = call_solar(api_key, model, [
         {"role": "system", "content": system},
-        {"role": "user", "content": user_msg}
+        {"role": "user", "content": user_msg},
     ], temperature=0.0)
     try:
         clean = res.strip()
@@ -232,12 +346,14 @@ def parse_user_intent(user_msg, api_key, model):
         if clean.endswith("```"):
             clean = clean[:-3]
         return json.loads(clean.strip())
-    except:
+    except Exception:
         return {"place": "", "target": "property"}
 
+
 def generate_agent_response(user_msg, query_result, api_key, model):
+    algo_label = "PCY (k=2)" if query_result["algo"] == "pcy" else "A-Priori (k=2)"
     system = (
-        "당신은 115,237건의 실제 소방청 화재 통계(Apriori/PCY 알고리즘 결과)를 기반으로 답변하는 전문 화재 안전 AI 에이전트입니다.\n"
+        f"당신은 115,237건의 실제 소방청 화재 통계({algo_label} 알고리즘 결과)를 기반으로 답변하는 전문 화재 안전 AI 에이전트입니다.\n"
         "사용자가 일상적인 대화체로 질문하면 친절하고 신뢰감 있게 설명하세요.\n\n"
         "답변 작성 지침:\n"
         "1. 실제 통계 수치(배수, 건수 등)를 명확히 인용하여 근거를 제시할 것.\n"
@@ -245,11 +361,23 @@ def generate_agent_response(user_msg, query_result, api_key, model):
         "3. 사용자가 바로 실천할 수 있는 '구체적인 맞춤형 예방 체크리스트 3~4가지'를 체크박스([ ]) 형태로 제공할 것.\n"
         "4. 데이터에 없는 허구의 수치를 지어내지 말 것."
     )
+    s = query_result["stats"]
+    if query_result["algo"] == "pcy":
+        prune_line = (
+            f"- 가지치기 통계: L1 빈발 아이템 {s['l1_frequent_items']}개 → C2 후보쌍 A-Priori 기준 {s['naive_c2_pairs']:,}개 중 PCY {s['c2_candidates']:,}개 채택 "
+            f"(비트맵 절감률 {s['c2_reduction']:.1%}, 빈발 버킷 {s['bitmap_frequent_buckets']:,}/{s['n_buckets']:,}개) → L2 빈발쌍 {s['l2_frequent_pairs']:,}개\n"
+        )
+    else:
+        prune_line = (
+            f"- 가지치기 통계: L1 빈발 아이템 {s['l1_frequent_items']}개 → C2 후보쌍 {s['c2_candidates']:,}개 → L2 빈발쌍 {s['l2_frequent_pairs']:,}개\n"
+        )
+
     user_prompt = (
         f"[사용자 질문]: {user_msg}\n\n"
-        f"[Apriori 알고리즘 분석 결과]:\n"
+        f"[{algo_label} 알고리즘 분석 결과]:\n"
         f"- 분석 대상: {query_result['place']} 관련 화재 총 {query_result['total_count']:,}건 중 {query_result['target_desc']} {query_result['heavy_count']:,}건\n"
-        f"- 위험 증폭 조합 (큰 피해 화재에서 유독 자주 발생하는 조합 상위):\n"
+        f"{prune_line}"
+        f"- 위험 증폭 2-항목 쌍 (큰 피해 화재에서 유독 자주 발생하는 쌍 상위):\n"
     )
     for i, r in enumerate(query_result["top_combos"], 1):
         user_prompt += f"  {i}. {' + '.join(r['items'])} (큰피해 발생 비율 {r['sup_heavy']:.1%}, 평소 대비 {r['ratio']:.1f}배 위험, {r['count_heavy']}건)\n"
@@ -258,11 +386,16 @@ def generate_agent_response(user_msg, query_result, api_key, model):
 
     return call_solar(api_key, model, [
         {"role": "system", "content": system},
-        {"role": "user", "content": user_prompt}
+        {"role": "user", "content": user_prompt},
     ], temperature=0.3)
+
 
 # ───────────────────────── 대화 루프 실행 ─────────────────────────
 def main():
+    ap = argparse.ArgumentParser(description="소방청 화재 빅데이터 기반 k=2 대화형 위험 진단 AI 에이전트")
+    ap.add_argument("--algo", choices=("pcy", "apriori"), default="pcy", help="사용할 k=2 마이닝 알고리즘 (기본: pcy)")
+    args = ap.parse_args()
+
     env = load_env()
     api_key = env.get("UPSTAGE_API_KEY", "")
     model = env.get("UPSTAGE_MODEL", "solar-pro4")
@@ -271,12 +404,13 @@ def main():
         print("❌ .env 파일에 UPSTAGE_API_KEY가 올바르게 설정되지 않았습니다.")
         sys.exit(1)
 
+    algo_title = "PCY (k=2)" if args.algo == "pcy" else "A-Priori 단독 (k=2)"
     print("=" * 65)
     print("🔥 소방청 빅데이터 기반 일상 대화형 화재 위험 진단 AI 에이전트")
-    print("   (A-Priori/PCY 알고리즘 + Upstage Solar-pro4 결합)")
+    print(f"   ({algo_title} 알고리즘 + Upstage Solar-pro4 결합)")
     print("=" * 65)
 
-    dataset = FireDataset(DEFAULT_CSV)
+    dataset = FireDataset(DATA_PATH)
 
     print("\n💡 이제 궁금한 점을 편하게 일상 언어로 질문해 보세요! (종료: 'q' 또는 'exit')")
     print("   예시 1) 고깃집이나 음식점에서는 어떤 상황일 때 불이 크게 나?")
@@ -302,19 +436,33 @@ def main():
         place = intent.get("place", "")
         target = intent.get("target", "property")
 
-        print(f"📊 [Apriori/PCY] 11만건 데이터 검색 중 (장소: '{place or '전체'}', 기준: {target})...", end="\r", flush=True)
-        res, err = dataset.query_patterns(place_keyword=place, target=target, top_k=8)
+        print(f"📊 [{algo_title}] 11만건 데이터 검색 중 (장소: '{place or '전체'}', 기준: {target})...", end="\r", flush=True)
+        res, err = dataset.query_patterns(place_keyword=place, target=target, top_k=8, algo=args.algo)
 
         if err:
             print(f"\n⚠️  {err}")
             continue
 
+        s = res["stats"]
+        if args.algo == "pcy":
+            print(
+                f"📌 [PCY (k=2) 가지치기 완료] L1={s['l1_frequent_items']}개 | "
+                f"C2 후보: A-Priori 기준 {s['naive_c2_pairs']:,}개 → PCY {s['c2_candidates']:,}개 "
+                f"({s['c2_reduction']:.1%} 절감, 빈발 버킷 {s['bitmap_frequent_buckets']:,}개) → "
+                f"L2={s['l2_frequent_pairs']:,}개 ({s['seconds']:.3f}초)"
+            )
+        else:
+            print(
+                f"📌 [A-Priori (k=2) 완료] L1={s['l1_frequent_items']}개 | "
+                f"C2 후보: {s['c2_candidates']:,}개 → L2={s['l2_frequent_pairs']:,}개 ({s['seconds']:.3f}초)"
+            )
         print("✍️  [Solar] 전문 화재 안전 답변 및 맞춤 점검표 작성 중...   ", end="\r", flush=True)
         reply = generate_agent_response(user_input, res, api_key, model)
 
         print("\n" + "=" * 65)
         print(reply)
         print("=" * 65)
+
 
 if __name__ == "__main__":
     main()

@@ -1,8 +1,7 @@
-"""소방청 115,237건 화재 데이터 기반 A-Priori / PCY 복합 위험 규칙 추출 스크립트.
+"""소방청 115,237건 화재 데이터 기반 PCY 단독 (k=2) 복합 위험 규칙 추출 스크립트.
 
-기존 빅데이터개론 프로젝트(A-Priori · PCY + Upstage Solar 감사 파이프라인)의
-빈발 항목집합 마이닝 엔진을 재사용하여, 조치원읍 지도 시스템에서 실시간으로
-건물 장바구니와 매칭할 수 있는 복합 화재 위험 규칙(data/jochiwon_pcy_rules.json)을 생성한다.
+기존 빅데이터개론 프로젝트의 PCY(Park-Chen-Yu) 해시 비트맵 알고리즘만 사용하여
+k=2 (2-항목 빈발 쌍 L2) 복합 화재 위험 규칙(data/jochiwon_pcy_rules.json)을 생성한다.
 """
 
 from __future__ import annotations
@@ -187,82 +186,20 @@ def build_pre_fire_basket(row: dict[str, str]) -> set[str]:
     return items
 
 
-# ───────────────────── A-Priori / PCY 알고리즘 (기존 구현 기반) ─────────────────────
+# ───────────────────── PCY 단독 알고리즘 (k=2, 해시 버킷 + 비트맵 가지치기) ─────────────────────
 def pair_hash(a: int, b: int, n_buckets: int) -> int:
     return (a * 10007 + b) % n_buckets
-
-
-def generate_candidates_k(prev_frequent_keys: set[tuple[int, ...]], k: int) -> set[tuple[int, ...]]:
-    cands: set[tuple[int, ...]] = set()
-    keys = sorted(prev_frequent_keys)
-    for x in keys:
-        for y in keys:
-            if x[:-1] == y[:-1] and x[-1] < y[-1]:
-                cand = x + (y[-1],)
-                if all(cand[:j] + cand[j + 1 :] in prev_frequent_keys for j in range(k)):
-                    cands.add(cand)
-    return cands
-
-
-def apriori(baskets: list[tuple[int, ...]], min_count: int, max_k: int = 3) -> tuple[dict[tuple[int, ...], int], dict[str, Any]]:
-    t0 = time.perf_counter()
-    c1: Counter[int] = Counter()
-    for b in baskets:
-        c1.update(b)
-    l1 = sorted(i for i, c in c1.items() if c >= min_count)
-    frequent: dict[tuple[int, ...], int] = {(i,): c1[i] for i in l1}
-
-    cand2 = set(combinations(l1, 2))
-    l1set = set(l1)
-    c2: Counter[tuple[int, int]] = Counter()
-    for b in baskets:
-        fb = [i for i in b if i in l1set]
-        for p in combinations(fb, 2):
-            if p in cand2:
-                c2[p] += 1
-    l2 = {p: c for p, c in c2.items() if c >= min_count}
-    frequent.update(l2)
-
-    stats: dict[str, Any] = {
-        "algorithm": "A-Priori",
-        "c1_items": len(c1),
-        "l1_frequent_items": len(l1),
-        "c2_candidates": len(cand2),
-        "l2_frequent_pairs": len(l2),
-    }
-
-    prev: dict[tuple[int, ...], int] = dict(l2)
-    k = 3
-    while prev and k <= max_k:
-        cands = generate_candidates_k(set(prev), k)
-        stats[f"c{k}_candidates"] = len(cands)
-        if not cands:
-            break
-        union = {i for c in cands for i in c}
-        ck: Counter[tuple[int, ...]] = Counter()
-        for b in baskets:
-            fb = [i for i in b if i in union]
-            if len(fb) < k:
-                continue
-            for c in combinations(fb, k):
-                if c in cands:
-                    ck[c] += 1
-        prev = {c: n for c, n in ck.items() if n >= min_count}
-        frequent.update(prev)
-        stats[f"l{k}_frequent"] = len(prev)
-        k += 1
-
-    stats["seconds"] = round(time.perf_counter() - t0, 3)
-    return frequent, stats
 
 
 def pcy(
     baskets: list[tuple[int, ...]],
     min_count: int,
-    max_k: int = 3,
     n_buckets: int = 32_771,
 ) -> tuple[dict[tuple[int, ...], int], dict[str, Any]]:
+    """PCY (Park-Chen-Yu) 단독 k=2 마이닝 (Pass 1 해시·비트맵 -> Pass 2 L2)."""
     t0 = time.perf_counter()
+
+    # [Pass 1] 단일 아이템 C1 카운트 + 모든 2-쌍을 해시 버킷에 누적
     c1: Counter[int] = Counter()
     bucket = [0] * n_buckets
     for b in baskets:
@@ -273,9 +210,12 @@ def pcy(
     l1 = sorted(i for i, c in c1.items() if c >= min_count)
     frequent: dict[tuple[int, ...], int] = {(i,): c1[i] for i in l1}
 
+    # 비트맵 생성 후 (a in L1 and c in L1 and bitmap[h(a,c)] == 1) 인 2-쌍만 C2 후보로 채택
     bitmap = [c >= min_count for c in bucket]
+    naive_c2_pairs = len(l1) * (len(l1) - 1) // 2
     cand2 = {(a, c) for a, c in combinations(l1, 2) if bitmap[pair_hash(a, c, n_buckets)]}
 
+    # [Pass 2] 가지치기된 C2 후보만 카운트하여 빈발 2-항목 쌍 L2 확정 (k=2)
     l1set = set(l1)
     c2: Counter[tuple[int, int]] = Counter()
     for b in baskets:
@@ -286,37 +226,20 @@ def pcy(
     l2 = {p: c for p, c in c2.items() if c >= min_count}
     frequent.update(l2)
 
+    c2_reduction = round(1.0 - (len(cand2) / naive_c2_pairs), 4) if naive_c2_pairs else 0.0
     stats: dict[str, Any] = {
         "algorithm": "PCY",
+        "max_k": 2,
+        "n_buckets": n_buckets,
         "c1_items": len(c1),
         "l1_frequent_items": len(l1),
+        "naive_c2_pairs": naive_c2_pairs,
         "bitmap_frequent_buckets": sum(bitmap),
         "c2_candidates": len(cand2),
         "l2_frequent_pairs": len(l2),
+        "c2_reduction": c2_reduction,
+        "seconds": round(time.perf_counter() - t0, 3),
     }
-
-    prev: dict[tuple[int, ...], int] = dict(l2)
-    k = 3
-    while prev and k <= max_k:
-        cands = generate_candidates_k(set(prev), k)
-        stats[f"c{k}_candidates"] = len(cands)
-        if not cands:
-            break
-        union = {i for c in cands for i in c}
-        ck: Counter[tuple[int, ...]] = Counter()
-        for b in baskets:
-            fb = [i for i in b if i in union]
-            if len(fb) < k:
-                continue
-            for c in combinations(fb, k):
-                if c in cands:
-                    ck[c] += 1
-        prev = {c: n for c, n in ck.items() if n >= min_count}
-        frequent.update(prev)
-        stats[f"l{k}_frequent"] = len(prev)
-        k += 1
-
-    stats["seconds"] = round(time.perf_counter() - t0, 3)
     return frequent, stats
 
 
@@ -344,18 +267,15 @@ def build_checklist(items: list[str], top_cause: str, top_spread: str, primary_t
 
 
 def is_valid_composite_rule(items: tuple[str, ...]) -> bool:
-    """동어반복(장소대+장소중 동시 포함)을 배제하고 건물·환경 복합 패턴만 허용한다."""
-    if len(items) < 2:
+    """동어반복(장소대+장소중 동시 포함)을 배제하고 k=2 건물·환경 복합 쌍만 허용한다."""
+    if len(items) != 2:
         return False
     has_place_l = any(i.startswith("장소대:") for i in items)
     has_place_m = any(i.startswith("장소중:") for i in items)
     if has_place_l and has_place_m:
         return False
     has_building_attr = any(i.startswith(("장소대:", "장소중:", "구조(", "건물규모:")) for i in items)
-    if not has_building_attr:
-        return False
-    # 단순 장소+건물규모만의 자명한 정적 2-조합보다 환경·구조·출동 결합 우선
-    return True
+    return has_building_attr
 
 
 def mine_rules() -> None:
@@ -423,35 +343,29 @@ def mine_rules() -> None:
         for r in building_records
     ]
 
-    # [2/4] A-Priori vs PCY 벤치마크 실행 (전체 건축물 화재, min_support=1.0%)
-    print("[2/4] A-Priori vs PCY 알고리즘 벤치마크 실행 ...")
+    # [2/4] PCY 단독 (k=2) 실행 및 비트맵 가지치기 지표 기록 (전체 건축물 화재, min_support=1.0%)
+    print("[2/4] PCY 단독 알고리즘 (k=2) 실행 ...")
     bench_min_count = max(2, int(n_building * 0.01))
-    freq_a, stats_a = apriori(encoded_baskets, bench_min_count, max_k=3)
-    freq_p, stats_p = pcy(encoded_baskets, bench_min_count, max_k=3, n_buckets=32_771)
-    c2_saved = (
-        1.0 - stats_p["c2_candidates"] / stats_a["c2_candidates"]
-        if stats_a["c2_candidates"]
-        else 0.0
-    )
-    results_identical = freq_a == freq_p
+    _, stats_p = pcy(encoded_baskets, bench_min_count, n_buckets=32_771)
     print(
-        f"      C2 후보: A-Priori {stats_a['c2_candidates']:,} vs PCY {stats_p['c2_candidates']:,} "
-        f"(절감 {c2_saved:.1%}), 결과 일치: {results_identical}"
+        f"      L1={stats_p['l1_frequent_items']}개 -> 전체 쌍 {stats_p['naive_c2_pairs']:,} vs "
+        f"PCY 비트맵 후 C2={stats_p['c2_candidates']:,} "
+        f"(절감 {stats_p['c2_reduction']:.1%}), L2={stats_p['l2_frequent_pairs']:,}쌍"
     )
 
-    # [3/4] 전체 및 용도별 PCY 마이닝으로 후보 규칙 수집
-    print("[3/4] 전체 및 용도별 복합 위험 규칙 PCY 마이닝 ...")
+    # [3/4] 전체 및 용도별 PCY k=2 마이닝으로 후보 쌍 수집
+    print("[3/4] 전체 및 용도별 k=2 복합 위험 쌍 PCY 마이닝 ...")
     candidate_itemsets: set[tuple[int, ...]] = set()
 
     heavy_prop_baskets = [b for b, f in zip(encoded_baskets, flags_prop) if f]
     heavy_cas_baskets = [b for b, f in zip(encoded_baskets, flags_cas) if f]
 
-    freq_gp, _ = pcy(heavy_prop_baskets, max(15, int(n_heavy_prop * 0.006)), max_k=3)
-    freq_gc, _ = pcy(heavy_cas_baskets, max(15, int(n_heavy_cas * 0.006)), max_k=3)
-    candidate_itemsets.update(s for s in freq_gp if len(s) >= 2)
-    candidate_itemsets.update(s for s in freq_gc if len(s) >= 2)
+    freq_gp, _ = pcy(heavy_prop_baskets, max(15, int(n_heavy_prop * 0.005)))
+    freq_gc, _ = pcy(heavy_cas_baskets, max(15, int(n_heavy_cas * 0.005)))
+    candidate_itemsets.update(s for s in freq_gp if len(s) == 2)
+    candidate_itemsets.update(s for s in freq_gc if len(s) == 2)
 
-    # 조치원읍 8개 용도별 조건부 PCY 마이닝 (희소 용도의 정밀 패턴 확보)
+    # 조치원읍 8개 용도별 조건부 PCY (k=2) 마이닝 (희소 용도의 정밀 패턴 확보)
     for usage in TARGET_USAGES:
         usage_item = f"장소중:{usage}"
         if usage_item not in idx_map:
@@ -460,24 +374,21 @@ def mine_rules() -> None:
         sub_prop = [b for b, f in zip(encoded_baskets, flags_prop) if f and u_idx in b]
         sub_cas = [b for b, f in zip(encoded_baskets, flags_cas) if f and u_idx in b]
         if len(sub_prop) >= 10:
-            fp_u, _ = pcy(sub_prop, max(5, int(len(sub_prop) * 0.04)), max_k=3)
-            candidate_itemsets.update(s for s in fp_u if len(s) >= 2 and u_idx in s)
+            fp_u, _ = pcy(sub_prop, max(5, int(len(sub_prop) * 0.03)))
+            candidate_itemsets.update(s for s in fp_u if len(s) == 2 and u_idx in s)
         if len(sub_cas) >= 10:
-            fc_u, _ = pcy(sub_cas, max(5, int(len(sub_cas) * 0.04)), max_k=3)
-            candidate_itemsets.update(s for s in fc_u if len(s) >= 2 and u_idx in s)
+            fc_u, _ = pcy(sub_cas, max(5, int(len(sub_cas) * 0.03)))
+            candidate_itemsets.update(s for s in fc_u if len(s) == 2 and u_idx in s)
 
-    # 동어반복 및 무의미한 조합 제거
+    # 동어반복 및 무의미한 조합 제거 (len(s) == 2)
     valid_cands = {
         s
         for s in candidate_itemsets
         if is_valid_composite_rule(tuple(vocab[i] for i in s))
     }
-    print(f"      유효 후보 조합 {len(valid_cands):,}개 통계 검증 중 ...")
+    print(f"      유효 k=2 후보 쌍 {len(valid_cands):,}개 통계 검증 중 ...")
 
     # 전체 75,798건 기준 정밀 통계(재산/인명 건수, 배수, 주요 발화요인/연소확대물) 산출
-    by_size: dict[int, set[tuple[int, ...]]] = {}
-    for s in valid_cands:
-        by_size.setdefault(len(s), set()).add(s)
     relevant_ids = {i for s in valid_cands for i in s}
 
     total_cnt: Counter[tuple[int, ...]] = Counter()
@@ -492,20 +403,17 @@ def mine_rules() -> None:
             continue
         c_val = rec["cause"]
         sp_val = rec["spread"]
-        for k, group in by_size.items():
-            if len(fb) < k:
-                continue
-            for comb in combinations(fb, k):
-                if comb in group:
-                    total_cnt[comb] += 1
-                    if is_p:
-                        prop_cnt[comb] += 1
-                    if is_c:
-                        cas_cnt[comb] += 1
-                    if c_val:
-                        cause_cnt.setdefault(comb, Counter())[c_val] += 1
-                    if sp_val:
-                        spread_cnt.setdefault(comb, Counter())[sp_val] += 1
+        for comb in combinations(fb, 2):
+            if comb in valid_cands:
+                total_cnt[comb] += 1
+                if is_p:
+                    prop_cnt[comb] += 1
+                if is_c:
+                    cas_cnt[comb] += 1
+                if c_val:
+                    cause_cnt.setdefault(comb, Counter())[c_val] += 1
+                if sp_val:
+                    spread_cnt.setdefault(comb, Counter())[sp_val] += 1
 
     n_rest_prop = n_building - n_heavy_prop
     n_rest_cas = n_building - n_heavy_cas
@@ -587,6 +495,8 @@ def mine_rules() -> None:
 
     output = {
         "metadata": {
+            "algorithm": "PCY",
+            "max_k": 2,
             "source_dataset": nfds_path.name,
             "n_total_fires": n_total_fires,
             "n_building_fires": n_building,
@@ -597,10 +507,10 @@ def mine_rules() -> None:
             "benchmark": {
                 "min_support": 0.01,
                 "min_count": bench_min_count,
-                "apriori": stats_a,
+                "n_buckets": stats_p["n_buckets"],
+                "naive_c2_pairs": stats_p["naive_c2_pairs"],
+                "c2_reduction": stats_p["c2_reduction"],
                 "pcy": stats_p,
-                "c2_reduction": round(c2_saved, 4),
-                "results_identical": results_identical,
             },
             "rule_count": len(final_rules),
         },
