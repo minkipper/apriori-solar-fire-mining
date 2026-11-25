@@ -130,6 +130,87 @@ _VIEWPORT_CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
 _STATION_CACHE: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
 MAX_CACHE_ENTRIES = 64
 
+# 화기 취급 · 가연물 업종 브이월드 POI 정의: (검색키워드, 분류라벨, 위험가중치, 허용카테고리토큰, 음식점PCY여부)
+FIRE_POI_SPECS: list[tuple[str, str, int, tuple[str, ...], bool]] = [
+    ("고기", "직화구이·고기", 4, ("음식", "한식", "고기", "갈비", "삼겹", "구이", "요식", "식당"), True),
+    ("치킨", "튀김·치킨", 3, ("음식", "치킨", "분식", "패스트푸드", "호프", "요식"), True),
+    ("중식", "강화력 중식", 3, ("음식", "중식", "중국", "요식"), True),
+    ("주점", "야간 요리주점", 3, ("음식", "주점", "유흥", "호프", "요리주점"), True),
+    ("식당", "일반 음식점", 2, ("음식", "한식", "식당", "요식", "분식", "일식", "양식"), True),
+    ("주유소", "주유소·위험물", 5, ("주유소", "가스", "충전소", "석유", "에너지"), False),
+    ("세탁소", "세탁·유기용제", 3, ("세탁", "개인서비스"), False),
+]
+
+
+def fetch_fire_prone_pois(
+    min_lon: float,
+    min_lat: float,
+    max_lon: float,
+    max_lat: float,
+    key: str,
+) -> list[dict[str, Any]]:
+    """현재 화면 영역(bbox) 내 화기 취급 업소(직화구이·튀김·주점·주유소 등) POI를 병렬 조회한다."""
+    bbox_str = f"{min_lon:.5f},{min_lat:.5f},{max_lon:.5f},{max_lat:.5f}"
+
+    def _query_spec(spec: tuple[str, str, int, tuple[str, ...], bool]) -> list[dict[str, Any]]:
+        kw, type_label, weight, allowed_cats, is_dining = spec
+        params = {
+            "service": "search",
+            "request": "search",
+            "version": "2.0",
+            "crs": "EPSG:4326",
+            "bbox": bbox_str,
+            "size": "100",
+            "page": "1",
+            "query": kw,
+            "type": "place",
+            "format": "json",
+            "key": key,
+        }
+        try:
+            data = _fetch_json("https://api.vworld.kr/req/search?" + urllib.parse.urlencode(params), timeout=8, retries=1)
+            items = data.get("response", {}).get("result", {}).get("items", [])
+        except Exception:
+            return []
+
+        found: list[dict[str, Any]] = []
+        for it in items:
+            cat = (it.get("category") or "").strip()
+            if not any(tok in cat for tok in allowed_cats):
+                continue
+            title = (it.get("title") or "").replace("<b>", "").replace("</b>", "").strip()
+            if not title:
+                continue
+            pt = it.get("point", {})
+            try:
+                lon = float(pt.get("x"))
+                lat = float(pt.get("y"))
+            except (TypeError, ValueError):
+                continue
+            road = (it.get("address") or {}).get("road") or ""
+            found.append({
+                "title": title,
+                "category": cat,
+                "type_label": type_label,
+                "weight": weight,
+                "is_dining": is_dining,
+                "road_addr": road,
+                "lat": lat,
+                "lon": lon,
+            })
+        return found
+
+    dedup: dict[tuple[str, float, float], dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=len(FIRE_POI_SPECS)) as pool:
+        for batch in pool.map(_query_spec, FIRE_POI_SPECS):
+            for p in batch:
+                dk = (p["title"], round(p["lat"], 4), round(p["lon"], 4))
+                # 동일 점포가 여러 키워드(예: 식당+고기)에 걸리면 가중치가 더 높은 분류 유지
+                if dk not in dedup or p["weight"] > dedup[dk]["weight"]:
+                    dedup[dk] = p
+    return list(dedup.values())
+MAX_CACHE_ENTRIES = 64
+
 
 def load_vworld_config() -> tuple[str, str]:
     """환경변수 또는 .env 파일에서 브이월드 인증키와 도메인을 읽어온다."""
@@ -701,6 +782,8 @@ def compute_fire_risk(
     neighbor_count_30m: int,
     dist_fire_station_m: float,
     dist_hydrant_m: float,
+    fire_poi_count: int = 0,
+    fire_poi_score: int = 0,
 ) -> dict[str, Any]:
     age = max(0, CURRENT_YEAR - built_year)
     score_age = 25 if age >= 40 else 21 if age >= 30 else 15 if age >= 20 else 9 if age >= 10 else 4
@@ -736,10 +819,12 @@ def compute_fire_risk(
     hydrant_risk = min(7, round(dist_hydrant_m / 65.0))
     score_access = min(15, station_risk + hydrant_risk)
 
-    total = min(100, max(0, score_age + score_structure + score_usage + score_spread + score_access))
+    total = min(100, max(0, score_age + score_structure + score_usage + score_spread + score_access + fire_poi_score))
     grade = "위험(A)" if total >= 75 else "경고(B)" if total >= 60 else "주의(C)" if total >= 45 else "보통(D)" if total >= 30 else "안전(E)"
 
     candidates: list[tuple[int, str]] = []
+    if fire_poi_count > 0 and fire_poi_score > 0:
+        candidates.append((max(8, fire_poi_score), f"화기 취급 업소 {fire_poi_count}곳 입점 (+{fire_poi_score}점)"))
     if age >= 25:
         candidates.append((score_age, f"준공 {age}년 경과 노후화 (+{score_age}점)"))
     if structure in {"일반목구조", "경량철골조(샌드위치패널)", "벽돌조"}:
@@ -766,6 +851,7 @@ def compute_fire_risk(
         "score_usage": score_usage,
         "score_spread": score_spread,
         "score_access": score_access,
+        "score_poi": fire_poi_score,
         "risk_factors": factors,
     }
 
@@ -777,6 +863,7 @@ def fuse_and_score_vworld_features(
     hydrants: list[dict[str, Any]],
     clip_polygon: list[list[float]] | None = None,
     force_jochiwon_ri: bool = False,
+    fire_pois: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """LT_C_SPBD(도로명건물)와 LT_C_BLDGINFO(GIS건물통합정보)를 공간 결합하고 위험도를 계산한다."""
     # 1) LT_C_BLDGINFO 인덱싱 (공간 격자 ~25m)
@@ -862,8 +949,41 @@ def fuse_and_score_vworld_features(
     centroids = [(r["lat"], r["lon"]) for r in merged_records]
     neighbor_counts = compute_neighbor_counts(centroids, radius_m=30.0)
 
+    # 화기 취급 업소(POI) -> 최근접 건물 매칭 (28m 이내, 도로명+건물번호 일치 시 우선)
+    poi_by_bldg: dict[int, list[dict[str, Any]]] = {}
+    if fire_pois and centroids:
+        p_cell_lat = 30.0 / M_PER_DEG_LAT
+        p_cell_lon = 30.0 / 89000.0
+        rec_grid: dict[tuple[int, int], list[int]] = {}
+        for r_idx, (rlat, rlon) in enumerate(centroids):
+            rec_grid.setdefault((int(rlat / p_cell_lat), int(rlon / p_cell_lon)), []).append(r_idx)
+
+        for poi in fire_pois:
+            plat, plon = poi["lat"], poi["lon"]
+            gx, gy = int(plat / p_cell_lat), int(plon / p_cell_lon)
+            road_addr = poi.get("road_addr") or ""
+            best_ridx: int | None = None
+            best_rank: tuple[int, float] = (2, 999.0)
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for r_idx in rec_grid.get((gx + dx, gy + dy), ()):
+                        d = to_meters(plat, plon, *centroids[r_idx])
+                        if d > 28.0:
+                            continue
+                        sp_r = merged_records[r_idx]["sp"]
+                        rd = (sp_r.get("rd_nm") or "").strip()
+                        bno = (sp_r.get("buld_no") or "").strip()
+                        addr_hit = 0 if (rd and bno and f"{rd} {bno}" in road_addr) else 1
+                        rank = (addr_hit, d)
+                        if rank < best_rank:
+                            best_rank = rank
+                            best_ridx = r_idx
+            if best_ridx is not None:
+                poi_by_bldg.setdefault(best_ridx, []).append(poi)
+
     out_features: list[dict[str, Any]] = []
     ledger_matched_count = 0
+    matched_poi_total = 0
 
     for idx, rec in enumerate(merged_records):
         sp = rec["sp"]
@@ -970,6 +1090,25 @@ def fuse_and_score_vworld_features(
             dist_station_m=dist_station,
             rng=rng,
         )
+
+        bldg_pois = poi_by_bldg.get(idx, [])
+        fire_poi_count = len(bldg_pois)
+        matched_poi_total += fire_poi_count
+        fire_poi_score = min(12, sum(p["weight"] for p in bldg_pois))
+        type_counts: dict[str, int] = {}
+        for p in bldg_pois:
+            lbl = p["type_label"]
+            type_counts[lbl] = type_counts.get(lbl, 0) + 1
+        fire_poi_types = [
+            f"{lbl} {cnt}곳"
+            for lbl, cnt in sorted(type_counts.items(), key=lambda kv: -kv[1])
+        ]
+        fire_poi_names = [p["title"] for p in sorted(bldg_pois, key=lambda x: -x["weight"])[:5]]
+        if any(p["is_dining"] for p in bldg_pois):
+            for extra_item in ("장소대:생활서비스", "장소중:음식점"):
+                if extra_item not in static_basket:
+                    static_basket.append(extra_item)
+
         risk = compute_fire_risk(
             built_year=built_year,
             structure=structure,
@@ -979,6 +1118,8 @@ def fuse_and_score_vworld_features(
             neighbor_count_30m=nb_cnt,
             dist_fire_station_m=dist_station,
             dist_hydrant_m=dist_hydrant,
+            fire_poi_count=fire_poi_count,
+            fire_poi_score=fire_poi_score,
         )
 
         data_source = "브이월드 GIS건물통합정보 (건축물대장 실측)" if has_ledger else "브이월드 도로명건물 도형"
@@ -1014,6 +1155,10 @@ def fuse_and_score_vworld_features(
                 "centroid_lon": round(clon, 6),
                 "data_source": data_source,
                 "has_real_ledger": has_ledger,
+                "fire_poi_count": fire_poi_count,
+                "fire_poi_score": fire_poi_score,
+                "fire_poi_types": fire_poi_types,
+                "fire_poi_names": fire_poi_names,
                 "static_basket": static_basket,
                 **risk,
             },
@@ -1022,6 +1167,7 @@ def fuse_and_score_vworld_features(
     stats = {
         "total_buildings": len(out_features),
         "ledger_matched": ledger_matched_count,
+        "fire_poi_total": matched_poi_total,
         "spbd_raw_count": len(spbd_raw),
         "bldg_raw_count": len(bldg_raw),
     }
@@ -1034,7 +1180,7 @@ def get_viewport_dataset(
     max_lon: float,
     max_lat: float,
 ) -> dict[str, Any]:
-    """전국 임의의 화면 영역(bbox)에 대해 브이월드 건물 + 인근 119안전센터 + PCY 장바구니를 실시간 반환한다."""
+    """전국 임의의 화면 영역(bbox)에 대해 브이월드 건물 + 인근 119안전센터 + 화기업소 POI + PCY 장바구니를 실시간 반환한다."""
     key, domain = load_vworld_config()
     if not key:
         raise RuntimeError(".env에 VWORLD_API_KEY가 설정되어 있지 않습니다.")
@@ -1050,13 +1196,15 @@ def get_viewport_dataset(
     bbox_str = f"{q_bbox[0]},{q_bbox[1]},{q_bbox[2]},{q_bbox[3]}"
     t0 = time.perf_counter()
 
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    with ThreadPoolExecutor(max_workers=4) as pool:
         f_spbd = pool.submit(_fetch_data_layer_bbox, "LT_C_SPBD", bbox_str, key, domain, 1)
         f_bldg = pool.submit(_fetch_data_layer_bbox, "LT_C_BLDGINFO", bbox_str, key, domain, 2)
         f_stations = pool.submit(fetch_nearby_fire_stations, q_bbox[0], q_bbox[1], q_bbox[2], q_bbox[3], key)
+        f_pois = pool.submit(fetch_fire_prone_pois, q_bbox[0], q_bbox[1], q_bbox[2], q_bbox[3], key)
         spbd_raw = f_spbd.result()
         bldg_raw = f_bldg.result()
         stations = f_stations.result()
+        fire_pois = f_pois.result()
 
     hydrants = synthesize_hydrants_for_bbox(q_bbox[0], q_bbox[1], q_bbox[2], q_bbox[3])
     features, stats = fuse_and_score_vworld_features(
@@ -1064,6 +1212,7 @@ def get_viewport_dataset(
         bldg_raw=bldg_raw,
         fire_stations=stations,
         hydrants=hydrants,
+        fire_pois=fire_pois,
     )
     elapsed = round(time.perf_counter() - t0, 2)
 

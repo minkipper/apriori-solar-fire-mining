@@ -299,6 +299,7 @@
       if (abortCtrl) abortCtrl.abort();
       closeInfoCard();
       buildingGroup.clearLayers();
+      stationGroup.clearLayers();
       state.layerById.clear();
       buildingLayer = null;
       el.zoomHint.classList.remove("hidden");
